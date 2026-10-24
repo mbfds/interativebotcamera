@@ -125,3 +125,36 @@ export interface DiscoveredDevice {
   status: 'online' | 'needs_auth' | 'connected';
   latencyMs?: number;
 }
+
+export interface CameraStreamTelemetry {
+  cameraId: string;
+  cameraName: string;
+  location: string;
+  latencyMs: number;
+  cpuPercent: number;
+  ramMb: number;
+  bitrateKbps: number;
+  fps: number;
+  targetFps: number;
+  packetLossPercent: number;
+  jitterMs: number;
+  status: 'optimal' | 'moderate' | 'bottleneck';
+  bottleneckType: 'none' | 'network_latency' | 'cpu_overload' | 'memory_pressure' | 'packet_loss';
+  bottleneckMessage?: string;
+  pingHistory: number[];
+  lastUpdated: number;
+}
+
+export interface SystemBottleneckAlert {
+  id: string;
+  cameraId: string;
+  cameraName: string;
+  severity: 'warning' | 'critical';
+  title: string;
+  description: string;
+  metric: 'latency' | 'cpu' | 'ram' | 'packets';
+  value: string;
+  recommendation: string;
+  timestamp: number;
+}
+

@@ -15,6 +15,7 @@ import {
   Cloud,
   Building2,
   Wifi,
+  Activity,
 } from 'lucide-react';
 import { User } from 'firebase/auth';
 import {
@@ -58,6 +59,7 @@ import { MotionLogPanel } from './components/MotionLogPanel';
 import { CloudStorageModal } from './components/CloudStorageModal';
 import { ClientBusinessModal } from './components/ClientBusinessModal';
 import { AISecurityInspectorModal } from './components/AISecurityInspectorModal';
+import { SystemDiagnosticsPanel } from './components/SystemDiagnosticsPanel';
 
 export default function App() {
   const [currentTab, setCurrentTab] = useState<'monitor' | 'recordings'>('monitor');
@@ -112,6 +114,7 @@ export default function App() {
   const [isCloudModalOpen, setIsCloudModalOpen] = useState<boolean>(false);
   const [isBusinessModalOpen, setIsBusinessModalOpen] = useState<boolean>(false);
   const [isAiInspectorOpen, setIsAiInspectorOpen] = useState<boolean>(false);
+  const [isDiagnosticsOpen, setIsDiagnosticsOpen] = useState<boolean>(false);
 
   // Storage Stats & Toast
   const [storageUsageBytes, setStorageUsageBytes] = useState<number>(0);
@@ -529,6 +532,10 @@ export default function App() {
         onOpenMotionLog={() => setIsMotionLogOpen(true)}
         onOpenCloudModal={() => setIsCloudModalOpen(true)}
         onOpenBusinessModal={() => setIsBusinessModalOpen(true)}
+        onOpenDiagnostics={() => {
+          setCurrentTab('monitor');
+          setIsDiagnosticsOpen((prev) => !prev);
+        }}
         onOpenAIModal={() => {
           if (cameras.length > 0) {
             // Trigger inspection on first camera
@@ -601,8 +608,23 @@ export default function App() {
                 )}
               </div>
 
-              {/* Grid Layout Switcher & Cloud Indicator */}
-              <div className="flex items-center gap-2.5">
+              {/* Grid Layout Switcher, Diagnostics & Cloud Indicator */}
+              <div className="flex flex-wrap items-center gap-2">
+                {/* Real-time Diagnostics & Bottleneck Toggle */}
+                <button
+                  onClick={() => setIsDiagnosticsOpen((prev) => !prev)}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-medium transition-all shadow-sm ${
+                    isDiagnosticsOpen
+                      ? 'bg-cyan-600 text-white border-cyan-500 shadow-cyan-900/40 font-semibold'
+                      : 'bg-neutral-900 hover:bg-neutral-850 border-neutral-800 text-cyan-400 hover:text-cyan-300'
+                  }`}
+                  title="Painel de latência de rede (ms) e CPU/RAM em tempo real de cada câmera para identificar gargalos"
+                >
+                  <Activity className={`w-3.5 h-3.5 ${isDiagnosticsOpen ? 'text-white' : 'text-cyan-400'}`} />
+                  <span>Diagnóstico de Rede & CPU/RAM</span>
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                </button>
+
                 {/* AI Security Inspection Shortcut */}
                 <button
                   onClick={() => {
@@ -676,6 +698,15 @@ export default function App() {
                 </div>
               </div>
             </div>
+
+            {/* Real-Time Camera Network & Resource Diagnostics Panel */}
+            {isDiagnosticsOpen && (
+              <SystemDiagnosticsPanel
+                cameras={cameras}
+                onClose={() => setIsDiagnosticsOpen(false)}
+                onUpdateCamera={handleUpdateCamera}
+              />
+            )}
 
             {/* Empty Cameras Fallback */}
             {cameras.length === 0 ? (

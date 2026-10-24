@@ -27,6 +27,7 @@ interface NavbarProps {
   onOpenCloudModal: () => void;
   onOpenBusinessModal: () => void;
   onOpenAIModal: () => void;
+  onOpenDiagnostics?: () => void;
   activeBusiness: ClientBusiness | null;
   cloudDestination: CloudStorageDestination;
   isGoogleConnected: boolean;
@@ -47,6 +48,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenCloudModal,
   onOpenBusinessModal,
   onOpenAIModal,
+  onOpenDiagnostics,
   activeBusiness,
   cloudDestination,
   isGoogleConnected,
@@ -97,6 +99,18 @@ export const Navbar: React.FC<NavbarProps> = ({
               </span>
             )}
           </button>
+
+          {/* Diagnostics Panel Shortcut */}
+          {onOpenDiagnostics && (
+            <button
+              onClick={onOpenDiagnostics}
+              className="hover:text-cyan-300 transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5 text-cyan-400"
+              title="Exibir métricas em tempo real de latência de rede (ms) e CPU/RAM de cada câmera"
+            >
+              <Wifi className="w-3.5 h-3.5" />
+              <span>Diagnóstico & Gargalos</span>
+            </button>
+          )}
 
           {/* AI Auditor Link */}
           <button
