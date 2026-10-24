@@ -1,0 +1,6 @@
+{
+  "name": "Sentinela NVR - Vigilância & Gravação de Câmeras",
+  "description": "Sistema completo para conectar câmeras de segurança locais e IP, monitorar ao vivo, detectar movimento e gravar com segurança no navegador.",
+  "requestFramePermissions": ["camera", "microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
