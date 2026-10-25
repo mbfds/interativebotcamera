@@ -1,4 +1,4 @@
-import { X, Trash2, Sliders, Shield, Video, Volume2, VolumeX, Eye, Lock } from 'lucide-react';
+import { X, Trash2, Sliders, Shield, Video, Volume2, VolumeX, Eye, Lock, Wifi, ShieldCheck } from 'lucide-react';
 import { CameraConfig, UserRole } from '../types/camera';
 
 interface CameraManagerModalProps {
@@ -32,7 +32,18 @@ export const CameraManagerModal: React.FC<CameraManagerModalProps> = ({
               <Sliders className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="text-base font-semibold text-neutral-100">Gerenciar Câmeras</h2>
+              <div className="flex items-center gap-2">
+                <h2 className="text-base font-semibold text-neutral-100">Gerenciar Câmeras</h2>
+                <span
+                  className={`text-[10px] font-mono px-2 py-0.5 rounded font-bold border ${
+                    currentUserRole === 'admin'
+                      ? 'bg-amber-950 text-amber-300 border-amber-800'
+                      : 'bg-emerald-950 text-emerald-300 border-emerald-800'
+                  }`}
+                >
+                  {currentUserRole === 'admin' ? 'MODO ADMIN' : 'MODO OPERADOR'}
+                </span>
+              </div>
               <p className="text-xs text-neutral-400">
                 {cameras.length} {cameras.length === 1 ? 'câmera configurada' : 'câmeras configuradas'}
               </p>
@@ -45,6 +56,16 @@ export const CameraManagerModal: React.FC<CameraManagerModalProps> = ({
             <X className="w-5 h-5" />
           </button>
         </div>
+
+        {/* Operational Security Notice */}
+        {currentUserRole === 'operador' && (
+          <div className="px-6 py-2.5 bg-neutral-950/90 border-b border-neutral-800/80 flex items-center gap-2 text-[11px] text-neutral-400">
+            <Lock className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+            <span>
+              <strong>Segurança Operacional Ativa:</strong> Configurações críticas de rede (IPs, portas RTSP) e exclusão de câmeras estão ocultas para operadores.
+            </span>
+          </div>
+        )}
 
         {/* List of Cameras */}
         <div className="p-6 overflow-y-auto space-y-4 text-xs">
@@ -68,7 +89,7 @@ export const CameraManagerModal: React.FC<CameraManagerModalProps> = ({
                   </div>
                 </div>
 
-                {currentUserRole === 'admin' ? (
+                {currentUserRole === 'admin' && (
                   <button
                     onClick={() => {
                       if (confirm(`Remover a câmera "${cam.name}"?`)) {
@@ -80,13 +101,6 @@ export const CameraManagerModal: React.FC<CameraManagerModalProps> = ({
                   >
                     <Trash2 className="w-4 h-4" />
                   </button>
-                ) : (
-                  <div
-                    className="p-1.5 text-neutral-600 rounded-lg cursor-not-allowed"
-                    title="Exclusão de câmera restrita a Administradores"
-                  >
-                    <Lock className="w-4 h-4" />
-                  </div>
                 )}
               </div>
 
@@ -162,6 +176,29 @@ export const CameraManagerModal: React.FC<CameraManagerModalProps> = ({
                       }
                       className="w-full accent-blue-500 h-1 bg-neutral-700 rounded-lg cursor-pointer"
                     />
+                  </div>
+                )}
+
+                {/* Critical Network Endpoint & RTSP Config - Hidden for Operator */}
+                {currentUserRole === 'admin' && (cam.ipHost || cam.streamUrl) && (
+                  <div className="sm:col-span-2 p-2.5 bg-neutral-900/90 rounded-lg border border-neutral-800 text-[11px] font-mono space-y-1">
+                    <div className="flex items-center justify-between text-neutral-400">
+                      <span className="flex items-center gap-1.5 text-cyan-300 font-sans font-semibold text-xs">
+                        <Wifi className="w-3.5 h-3.5 text-cyan-400" />
+                        Configuração de Rede & RTSP (Admin)
+                      </span>
+                      <span className="text-[10px] text-neutral-500">Porta: {cam.ipPort || 554}</span>
+                    </div>
+                    {cam.ipHost && (
+                      <p className="text-neutral-300 truncate">
+                        <span className="text-neutral-500">Host IP:</span> {cam.ipHost} · Canal {cam.ipChannel || 1}
+                      </p>
+                    )}
+                    {cam.streamUrl && (
+                      <p className="text-neutral-400 text-[10px] truncate" title={cam.streamUrl}>
+                        <span className="text-neutral-500">Stream:</span> {cam.streamUrl}
+                      </p>
+                    )}
                   </div>
                 )}
               </div>

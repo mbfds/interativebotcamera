@@ -17,7 +17,7 @@ import {
   BellOff,
   BellRing,
 } from 'lucide-react';
-import { CameraConfig, MotionEvent, RecordingItem } from '../types/camera';
+import { CameraConfig, MotionEvent, RecordingItem, UserRole } from '../types/camera';
 import { MotionDetector } from '../utils/motionDetector';
 import { StreamSimulator } from '../utils/streamSimulator';
 import { saveRecordingToDB, saveEventToDB } from '../services/db';
@@ -41,6 +41,7 @@ interface CameraFeedProps {
     timestamp: number;
   } | null;
   onDismissThreatAlert?: () => void;
+  currentUserRole?: UserRole;
 }
 
 export const CameraFeed: React.FC<CameraFeedProps> = ({
@@ -54,6 +55,7 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({
   onAnalyzeAI,
   externalThreatAlert,
   onDismissThreatAlert,
+  currentUserRole = 'admin',
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -853,15 +855,17 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({
 
         {/* Right Actions: Test Threat Alert, Night Vision, PTZ, Focus */}
         <div className="flex items-center gap-1.5">
-          {/* Test High Threat Alert Button */}
-          <button
-            onClick={() => triggerAIThreatAlert(92, 'Teste de invasão suspeita no caixa')}
-            className="flex items-center gap-1 px-2 py-1 rounded bg-neutral-800/80 hover:bg-red-950/60 hover:text-red-300 text-neutral-400 text-[11px] border border-neutral-700/60 transition-colors"
-            title="Testar sirene de Ameaça Alta da IA nesta câmera"
-          >
-            <ShieldAlert className="w-3 h-3 text-red-400" />
-            <span className="hidden sm:inline">Testar Ameaça IA</span>
-          </button>
+          {/* Test High Threat Alert Button - Admin only */}
+          {currentUserRole === 'admin' && (
+            <button
+              onClick={() => triggerAIThreatAlert(92, 'Teste de invasão suspeita no caixa')}
+              className="flex items-center gap-1 px-2 py-1 rounded bg-neutral-800/80 hover:bg-red-950/60 hover:text-red-300 text-neutral-400 text-[11px] border border-neutral-700/60 transition-colors"
+              title="Testar sirene de Ameaça Alta da IA nesta câmera (Administrador)"
+            >
+              <ShieldAlert className="w-3 h-3 text-red-400" />
+              <span className="hidden sm:inline">Testar Ameaça IA</span>
+            </button>
+          )}
 
           {/* Simulated motion button for simulated feeds */}
           {camera.type === 'simulated' && (

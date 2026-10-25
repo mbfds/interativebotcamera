@@ -15,9 +15,10 @@ import {
   UploadCloud,
   ExternalLink,
   Settings,
+  Lock,
 } from 'lucide-react';
 import { User } from 'firebase/auth';
-import { RecordingItem, CameraConfig, CloudStorageDestination } from '../types/camera';
+import { RecordingItem, CameraConfig, CloudStorageDestination, UserRole } from '../types/camera';
 import { VideoPlayerModal } from './VideoPlayerModal';
 
 interface RecordingsGalleryProps {
@@ -32,6 +33,7 @@ interface RecordingsGalleryProps {
   onUploadToDrive: (recording: RecordingItem) => Promise<void>;
   isUploadingId: string | null;
   onOpenCloudModal: () => void;
+  currentUserRole?: UserRole;
 }
 
 export const RecordingsGallery: React.FC<RecordingsGalleryProps> = ({
@@ -46,6 +48,7 @@ export const RecordingsGallery: React.FC<RecordingsGalleryProps> = ({
   onUploadToDrive,
   isUploadingId,
   onOpenCloudModal,
+  currentUserRole = 'admin',
 }) => {
   const [selectedCameraFilter, setSelectedCameraFilter] = useState<string>('all');
   const [selectedTriggerFilter, setSelectedTriggerFilter] = useState<string>('all');
@@ -209,7 +212,7 @@ export const RecordingsGallery: React.FC<RecordingsGalleryProps> = ({
             <Settings className="w-3.5 h-3.5 text-neutral-500 ml-1" />
           </button>
 
-          {recordings.length > 0 && (
+          {currentUserRole === 'admin' && recordings.length > 0 ? (
             <button
               onClick={() => {
                 if (confirm('Tem certeza de que deseja apagar TODAS as gravações salvas? Esta ação não pode ser desfeita.')) {
@@ -221,7 +224,15 @@ export const RecordingsGallery: React.FC<RecordingsGalleryProps> = ({
               <Trash2 className="w-3.5 h-3.5" />
               <span className="hidden sm:inline">Limpar Todas</span>
             </button>
-          )}
+          ) : currentUserRole === 'operador' ? (
+            <div
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-neutral-950/90 border border-neutral-800 text-[11px] text-neutral-400"
+              title="Exclusão de evidências e gravações restrita ao perfil Administrador"
+            >
+              <Lock className="w-3 h-3 text-emerald-400" />
+              <span className="hidden sm:inline">Gravações Protegidas</span>
+            </div>
+          ) : null}
         </div>
       </div>
 
@@ -559,13 +570,15 @@ export const RecordingsGallery: React.FC<RecordingsGalleryProps> = ({
                       )}
                     </div>
 
-                    <button
-                      onClick={(e) => handleDelete(rec.id, e)}
-                      className="p-1 text-neutral-500 hover:text-red-400 transition-colors"
-                      title="Excluir gravação"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
+                    {currentUserRole === 'admin' && (
+                      <button
+                        onClick={(e) => handleDelete(rec.id, e)}
+                        className="p-1 text-neutral-500 hover:text-red-400 transition-colors"
+                        title="Excluir gravação (Administrador)"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    )}
                   </div>
                 </div>
               </div>

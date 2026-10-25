@@ -23,13 +23,14 @@ import {
   Pause,
   RotateCcw,
 } from 'lucide-react';
-import { CameraConfig, CameraStreamTelemetry, SystemBottleneckAlert } from '../types/camera';
+import { CameraConfig, CameraStreamTelemetry, SystemBottleneckAlert, UserRole } from '../types/camera';
 
 interface SystemDiagnosticsPanelProps {
   cameras: CameraConfig[];
   onClose?: () => void;
   isCompactMode?: boolean;
   onUpdateCamera?: (camera: CameraConfig) => void;
+  currentUserRole?: UserRole;
 }
 
 export const SystemDiagnosticsPanel: React.FC<SystemDiagnosticsPanelProps> = ({
@@ -37,6 +38,7 @@ export const SystemDiagnosticsPanel: React.FC<SystemDiagnosticsPanelProps> = ({
   onClose,
   isCompactMode = false,
   onUpdateCamera,
+  currentUserRole = 'admin',
 }) => {
   const [filterMode, setFilterMode] = useState<'all' | 'bottleneck' | 'high_latency' | 'high_cpu'>('all');
   const [refreshInterval, setRefreshInterval] = useState<number>(1500); // ms
@@ -387,8 +389,8 @@ export const SystemDiagnosticsPanel: React.FC<SystemDiagnosticsPanelProps> = ({
 
         {/* Global Controls */}
         <div className="flex flex-wrap items-center gap-2 self-start md:self-auto">
-          {/* Stress simulator button for testing bottleneck resolution */}
-          {cameras.length > 0 && (
+          {/* Stress simulator button for testing bottleneck resolution - Admin only */}
+          {currentUserRole === 'admin' && cameras.length > 0 && (
             <button
               onClick={() => {
                 if (simulatedStressCameraId) {

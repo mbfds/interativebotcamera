@@ -16,6 +16,11 @@ import {
   Building2,
   Wifi,
   Activity,
+  Lock,
+  Unlock,
+  KeyRound,
+  ShieldCheck,
+  ShieldAlert,
 } from 'lucide-react';
 import { User } from 'firebase/auth';
 import {
@@ -633,6 +638,76 @@ export default function App() {
         {/* Tab 1: Live Monitoring */}
         {currentTab === 'monitor' && (
           <div className="space-y-4">
+            {/* Modo Administrador & Operational Security Control Bar */}
+            <div
+              className={`p-3.5 rounded-2xl border transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-lg ${
+                currentUserRole === 'admin'
+                  ? 'bg-amber-950/20 border-amber-800/80 text-amber-200'
+                  : 'bg-neutral-900/90 border-neutral-800 text-neutral-300'
+              }`}
+            >
+              <div className="flex items-center gap-3">
+                <div
+                  className={`p-2 rounded-xl border flex items-center justify-center shrink-0 ${
+                    currentUserRole === 'admin'
+                      ? 'bg-amber-900/60 border-amber-600/80 text-amber-300 shadow-md shadow-amber-950/40'
+                      : 'bg-emerald-950 border-emerald-700/80 text-emerald-400'
+                  }`}
+                >
+                  {currentUserRole === 'admin' ? (
+                    <ShieldCheck className="w-5 h-5 text-amber-400" />
+                  ) : (
+                    <Shield className="w-5 h-5 text-emerald-400" />
+                  )}
+                </div>
+                <div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h4 className="text-xs font-bold text-neutral-100 uppercase tracking-wide">
+                      {currentUserRole === 'admin'
+                        ? 'Modo Administrador Ativo'
+                        : 'Modo Operador · Segurança Operacional'}
+                    </h4>
+                    <span
+                      className={`text-[10px] font-mono px-2 py-0.5 rounded-full font-bold border ${
+                        currentUserRole === 'admin'
+                          ? 'bg-amber-950 text-amber-300 border-amber-700'
+                          : 'bg-emerald-950 text-emerald-300 border-emerald-800'
+                      }`}
+                    >
+                      {currentUserRole === 'admin' ? 'ACESSO TOTAL' : 'OPERAÇÃO SEGURA'}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-neutral-400 mt-0.5">
+                    {currentUserRole === 'admin'
+                      ? 'Parâmetros de rede, IPs, portas RTSP e exclusão de câmeras habilitadas para gerenciamento.'
+                      : 'Configurações críticas de rede, IPs e exclusão de câmeras estão ocultas para evitar falhas acidentais.'}
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 self-end sm:self-auto shrink-0">
+                {currentUserRole === 'admin' ? (
+                  <button
+                    onClick={() => handleRoleChange('operador')}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-neutral-900 hover:bg-neutral-850 border border-neutral-700 text-xs text-neutral-300 hover:text-white font-medium transition-colors shadow-sm"
+                    title="Bloquear para o modo operador seguro (oculta configurações críticas e exclusão de câmeras)"
+                  >
+                    <Lock className="w-3.5 h-3.5 text-neutral-400" />
+                    <span>Bloquear para Modo Operador</span>
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => setIsRoleModalOpen(true)}
+                    className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-500 text-white font-semibold text-xs transition-all shadow-md shadow-amber-900/40 hover:scale-[1.02]"
+                    title="Inserir PIN (padrão: 1234) para desbloquear o Modo Administrador"
+                  >
+                    <KeyRound className="w-3.5 h-3.5 text-amber-200" />
+                    <span>Desbloquear Modo Administrador</span>
+                  </button>
+                )}
+              </div>
+            </div>
+
             {/* Monitor Sub-Header: Store Info, Grid Selector & AI Quick Button */}
             <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 pb-2 border-b border-neutral-800/80">
               <div className="flex items-center gap-2.5">
@@ -755,6 +830,7 @@ export default function App() {
                 cameras={cameras}
                 onClose={() => setIsDiagnosticsOpen(false)}
                 onUpdateCamera={handleUpdateCamera}
+                currentUserRole={currentUserRole}
               />
             )}
 
@@ -768,16 +844,28 @@ export default function App() {
                   Nenhuma câmera cadastrada para {activeBusiness?.name}
                 </h3>
                 <p className="text-xs text-neutral-400 max-w-md mx-auto">
-                  Localize e conecte automaticamente câmeras do seu comércio (Intelbras, Tapo, Hikvision, Dahua, Yoosee ou Webcams) conectadas à sua rede local com 1 clique.
+                  {currentUserRole === 'admin'
+                    ? 'Localize e conecte automaticamente câmeras do seu comércio (Intelbras, Tapo, Hikvision, Dahua, Yoosee ou Webcams) conectadas à sua rede local com 1 clique.'
+                    : 'Nenhuma câmera ativa neste comércio. Solicite ao administrador do sistema para adicionar as câmeras.'}
                 </p>
                 <div className="pt-2 flex flex-wrap justify-center gap-3">
-                  <button
-                    onClick={() => setIsAddModalOpen(true)}
-                    className="flex items-center gap-2 px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-semibold transition-all shadow-lg shadow-blue-900/30 hover:scale-[1.02]"
-                  >
-                    <Wifi className="w-4 h-4 text-cyan-300" />
-                    <span>Buscar Câmeras na Minha Rede (1-Clique)</span>
-                  </button>
+                  {currentUserRole === 'admin' ? (
+                    <button
+                      onClick={() => setIsAddModalOpen(true)}
+                      className="flex items-center gap-2 px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-semibold transition-all shadow-lg shadow-blue-900/30 hover:scale-[1.02]"
+                    >
+                      <Wifi className="w-4 h-4 text-cyan-300" />
+                      <span>Buscar Câmeras na Minha Rede (1-Clique)</span>
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => setIsRoleModalOpen(true)}
+                      className="flex items-center gap-2 px-5 py-2.5 bg-neutral-800 hover:bg-neutral-700 text-neutral-200 rounded-xl text-xs font-semibold transition-all border border-neutral-700 shadow"
+                    >
+                      <KeyRound className="w-4 h-4 text-amber-400" />
+                      <span>Desbloquear Modo Administrador para Adicionar Câmeras</span>
+                    </button>
+                  )}
                 </div>
               </div>
             ) : (
@@ -807,6 +895,7 @@ export default function App() {
                         return copy;
                       });
                     }}
+                    currentUserRole={currentUserRole}
                   />
                 ))}
               </div>
@@ -828,6 +917,7 @@ export default function App() {
             onUploadToDrive={handleUploadToDrive}
             isUploadingId={isUploadingId}
             onOpenCloudModal={() => setIsCloudModalOpen(true)}
+            currentUserRole={currentUserRole}
           />
         )}
       </main>
