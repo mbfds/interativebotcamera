@@ -120,84 +120,28 @@ export async function getStoredCameras(tenantId?: string): Promise<CameraConfig[
 
     request.onsuccess = () => {
       let cameras = (request.result as CameraConfig[]) || [];
-      if (cameras.length === 0) {
-        // Seed initial market cameras for testing
-        const defaultCameras: CameraConfig[] = [
-          {
-            id: 'cam-intelbras-1',
-            tenantId: DEFAULT_BUSINESS_ID,
-            name: 'Intelbras Mibo iMX - Entrada & Caixa',
-            location: 'Frente de Loja / Caixa',
-            type: 'commercial_ip',
-            brand: 'intelbras',
-            ipHost: '192.168.1.108',
-            ipPort: 554,
-            ipUser: 'admin',
-            ipChannel: 1,
-            simulationPreset: 'entrance',
-            resolution: '1080p',
-            fps: 30,
-            enableAudio: false,
-            nightVision: false,
-            motionDetectionEnabled: true,
-            motionSensitivity: 42,
-            autoRecordOnMotion: true,
-            autoRecordDuration: 12,
-            digitalZoom: 1,
-            pan: 0,
-            tilt: 0,
-            dateAdded: Date.now() - 3600000,
-          },
-          {
-            id: 'cam-tapo-2',
-            tenantId: DEFAULT_BUSINESS_ID,
-            name: 'TP-Link Tapo C200 - Corredor & Estoque',
-            location: 'Corredor de Produtos',
-            type: 'commercial_ip',
-            brand: 'tapo',
-            ipHost: '192.168.1.120',
-            ipPort: 554,
-            ipUser: 'admin',
-            ipChannel: 1,
-            simulationPreset: 'hallway',
-            resolution: '1080p',
-            fps: 30,
-            enableAudio: false,
-            nightVision: false,
-            motionDetectionEnabled: true,
-            motionSensitivity: 38,
-            autoRecordOnMotion: true,
-            autoRecordDuration: 15,
-            digitalZoom: 1,
-            pan: 0,
-            tilt: 0,
-            dateAdded: Date.now() - 1800000,
-          },
-          {
-            id: 'cam-webcam-1',
-            tenantId: DEFAULT_BUSINESS_ID,
-            name: 'Câmera Local / Balcão (Webcam)',
-            location: 'Terminal de Atendimento',
-            type: 'webcam',
-            resolution: '720p',
-            fps: 30,
-            enableAudio: true,
-            nightVision: false,
-            motionDetectionEnabled: true,
-            motionSensitivity: 35,
-            autoRecordOnMotion: false,
-            autoRecordDuration: 15,
-            digitalZoom: 1,
-            pan: 0,
-            tilt: 0,
-            dateAdded: Date.now(),
-          },
-        ];
+      
+      // Filter out any legacy demonstrative/mock cameras that are not real
+      const realOnly = cameras.filter((c) => {
+        const isLegacyDemo =
+          c.id === 'cam-intelbras-1' ||
+          c.id === 'cam-tapo-2' ||
+          c.id.startsWith('net-disc-') ||
+          (c.ipHost === '192.168.1.108' && c.name.includes('Intelbras Mibo iMX')) ||
+          (c.ipHost === '192.168.1.120' && c.name.includes('TP-Link Tapo C200'));
+        return !isLegacyDemo;
+      });
 
+      // If legacy demo cameras were present in DB, purge them in background
+      if (realOnly.length !== cameras.length) {
         const writeTx = db.transaction(STORES.CAMERAS, 'readwrite');
         const writeStore = writeTx.objectStore(STORES.CAMERAS);
-        defaultCameras.forEach((cam) => writeStore.put(cam));
-        cameras = defaultCameras;
+        cameras.forEach((c) => {
+          if (!realOnly.find((r) => r.id === c.id)) {
+            writeStore.delete(c.id);
+          }
+        });
+        cameras = realOnly;
       }
 
       // Filter by tenantId if provided
@@ -207,6 +151,33 @@ export async function getStoredCameras(tenantId?: string): Promise<CameraConfig[
       resolve(cameras);
     };
     request.onerror = () => reject(request.error);
+  });
+}
+
+// Purge any demonstrative cameras manually
+export async function purgeDemonstrativeCameras(): Promise<void> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORES.CAMERAS, 'readwrite');
+    const store = tx.objectStore(STORES.CAMERAS);
+    const getAllReq = store.getAll();
+
+    getAllReq.onsuccess = () => {
+      const allCams = (getAllReq.result as CameraConfig[]) || [];
+      allCams.forEach((c) => {
+        const isDemo =
+          c.id === 'cam-intelbras-1' ||
+          c.id === 'cam-tapo-2' ||
+          c.id.startsWith('net-disc-') ||
+          (c.ipHost === '192.168.1.108' && c.name.includes('Intelbras Mibo iMX')) ||
+          (c.ipHost === '192.168.1.120' && c.name.includes('TP-Link Tapo C200'));
+        if (isDemo) {
+          store.delete(c.id);
+        }
+      });
+      resolve();
+    };
+    getAllReq.onerror = () => reject(getAllReq.error);
   });
 }
 

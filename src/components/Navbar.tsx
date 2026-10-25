@@ -11,8 +11,10 @@ import {
   Building2,
   ChevronDown,
   Wifi,
+  ShieldCheck,
+  User,
 } from 'lucide-react';
-import { GridViewMode, CloudStorageDestination, ClientBusiness } from '../types/camera';
+import { GridViewMode, CloudStorageDestination, ClientBusiness, UserRole } from '../types/camera';
 
 interface NavbarProps {
   currentTab: 'monitor' | 'recordings';
@@ -28,6 +30,8 @@ interface NavbarProps {
   onOpenBusinessModal: () => void;
   onOpenAIModal: () => void;
   onOpenDiagnostics?: () => void;
+  onOpenRoleModal?: () => void;
+  currentRole?: UserRole;
   activeBusiness: ClientBusiness | null;
   cloudDestination: CloudStorageDestination;
   isGoogleConnected: boolean;
@@ -49,6 +53,8 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenBusinessModal,
   onOpenAIModal,
   onOpenDiagnostics,
+  onOpenRoleModal,
+  currentRole = 'admin',
   activeBusiness,
   cloudDestination,
   isGoogleConnected,
@@ -151,6 +157,28 @@ export const Navbar: React.FC<NavbarProps> = ({
 
         {/* Zone 3: Primary Action & Quick Tools */}
         <div className="flex items-center gap-2.5 shrink-0">
+          {/* User vs Admin Role Indicator & Switcher */}
+          {onOpenRoleModal && (
+            <button
+              onClick={onOpenRoleModal}
+              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-semibold transition-all ${
+                currentRole === 'admin'
+                  ? 'bg-amber-950/70 hover:bg-amber-900/80 border-amber-800 text-amber-300'
+                  : 'bg-blue-950/70 hover:bg-blue-900/80 border-blue-800 text-blue-300'
+              }`}
+              title={`Perfil: ${currentRole === 'admin' ? 'Administrador (Acesso Total)' : 'Usuário Operador (Monitoramento)'}. Clique para alternar.`}
+            >
+              {currentRole === 'admin' ? (
+                <ShieldCheck className="w-3.5 h-3.5 text-amber-400" />
+              ) : (
+                <User className="w-3.5 h-3.5 text-blue-400" />
+              )}
+              <span className="hidden sm:inline font-mono text-[11px]">
+                {currentRole === 'admin' ? 'Admin' : 'Operador'}
+              </span>
+            </button>
+          )}
+
           {/* Active Business / Store Selector */}
           <button
             onClick={onOpenBusinessModal}

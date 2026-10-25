@@ -27,6 +27,7 @@ import {
   ClientBusiness,
   AISecurityAnalysis,
   AIDailyReport,
+  UserRole,
 } from './types/camera';
 import {
   getStoredBusinesses,
@@ -35,6 +36,7 @@ import {
   getStoredCameras,
   saveCameraToDB,
   deleteCameraFromDB,
+  purgeDemonstrativeCameras,
   getStoredRecordings,
   saveRecordingToDB,
   deleteRecordingFromDB,
@@ -60,6 +62,8 @@ import { CloudStorageModal } from './components/CloudStorageModal';
 import { ClientBusinessModal } from './components/ClientBusinessModal';
 import { AISecurityInspectorModal } from './components/AISecurityInspectorModal';
 import { SystemDiagnosticsPanel } from './components/SystemDiagnosticsPanel';
+import { UserRoleModal } from './components/UserRoleModal';
+import { sendHighThreatBrowserNotification } from './utils/browserNotifications';
 
 export default function App() {
   const [currentTab, setCurrentTab] = useState<'monitor' | 'recordings'>('monitor');
@@ -115,6 +119,31 @@ export default function App() {
   const [isBusinessModalOpen, setIsBusinessModalOpen] = useState<boolean>(false);
   const [isAiInspectorOpen, setIsAiInspectorOpen] = useState<boolean>(false);
   const [isDiagnosticsOpen, setIsDiagnosticsOpen] = useState<boolean>(false);
+  const [isRoleModalOpen, setIsRoleModalOpen] = useState<boolean>(false);
+
+  // User and Admin Role Separation
+  const [currentUserRole, setCurrentUserRole] = useState<UserRole>(() => {
+    return (localStorage.getItem('sentinela_user_role') as UserRole) || 'admin';
+  });
+
+  const handleRoleChange = (role: UserRole) => {
+    setCurrentUserRole(role);
+    localStorage.setItem('sentinela_user_role', role);
+    setToastMessage({
+      title: `Perfil Alternado: ${role === 'admin' ? 'Administrador' : 'Operador'}`,
+      subtitle: role === 'admin' ? 'Acesso irrestrito liberado.' : 'Modo monitoramento seguro ativado.',
+    });
+  };
+
+  const handlePurgeDemoCameras = async () => {
+    await purgeDemonstrativeCameras();
+    const cleanList = await getStoredCameras(activeBusinessId);
+    setCameras(cleanList);
+    setToastMessage({
+      title: 'Câmeras Demonstrativas Removidas',
+      subtitle: 'Agora apenas dispositivos reais conectados constam no sistema.',
+    });
+  };
 
   // Storage Stats & Toast
   const [storageUsageBytes, setStorageUsageBytes] = useState<number>(0);
@@ -349,6 +378,15 @@ export default function App() {
           title: `🚨 Alerta IA: Ameaça Alta em ${camera.name}!`,
           subtitle: `Nível crítico (${data.threatScore || 85}/100): ${topReason}`,
         });
+
+        // Dispatch Browser Web Notification to alert user even if tab is in background/minimized
+        sendHighThreatBrowserNotification({
+          cameraName: camera.name,
+          threatScore: data.threatScore || 85,
+          reason: topReason,
+          location: camera.location,
+          businessName: activeBusiness?.name,
+        });
       }
     } catch (err: unknown) {
       const error = err as Error;
@@ -527,7 +565,17 @@ export default function App() {
         motionEventCount={motionEvents.length}
         soundEnabled={soundEnabled}
         onToggleSound={() => setSoundEnabled(!soundEnabled)}
-        onOpenAddModal={() => setIsAddModalOpen(true)}
+        onOpenAddModal={() => {
+          if (currentUserRole !== 'admin') {
+            setToastMessage({
+              title: 'Acesso Restrito ao Administrador',
+              subtitle: 'Alterne para o perfil de Administrador para pesquisar e adicionar câmeras.',
+            });
+            setIsRoleModalOpen(true);
+            return;
+          }
+          setIsAddModalOpen(true);
+        }}
         onOpenManagerModal={() => setIsManagerModalOpen(true)}
         onOpenMotionLog={() => setIsMotionLogOpen(true)}
         onOpenCloudModal={() => setIsCloudModalOpen(true)}
@@ -536,6 +584,8 @@ export default function App() {
           setCurrentTab('monitor');
           setIsDiagnosticsOpen((prev) => !prev);
         }}
+        onOpenRoleModal={() => setIsRoleModalOpen(true)}
+        currentRole={currentUserRole}
         onOpenAIModal={() => {
           if (cameras.length > 0) {
             // Trigger inspection on first camera
@@ -832,6 +882,7 @@ export default function App() {
         onUpdateCamera={handleUpdateCamera}
         onDeleteCamera={handleDeleteCamera}
         onOpenAddModal={() => setIsAddModalOpen(true)}
+        currentUserRole={currentUserRole}
       />
 
       <MotionLogPanel
@@ -885,6 +936,16 @@ export default function App() {
         onGenerateDailyReport={handleGenerateDailyReport}
         dailyReport={dailyReport}
         isLoadingDailyReport={isDailyReportLoading}
+      />
+
+      {/* User and Admin Role Profile Switcher & Notification Controls */}
+      <UserRoleModal
+        isOpen={isRoleModalOpen}
+        onClose={() => setIsRoleModalOpen(false)}
+        currentRole={currentUserRole}
+        onChangeRole={handleRoleChange}
+        activeBusinessName={activeBusiness?.name}
+        onPurgeDemoCameras={handlePurgeDemoCameras}
       />
     </div>
   );

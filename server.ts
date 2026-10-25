@@ -169,113 +169,20 @@ Responda em JSON com:
 });
 
 // Endpoint: Local Network Camera Discovery / ONVIF Scanner
-app.post('/api/network/scan-cameras', (req: Request, res: Response): void => {
-  const { subnet = '192.168.1.0/24' } = req.body || {};
+app.post('/api/network/scan-cameras', (_req: Request, res: Response): void => {
+  const { subnet = '192.168.1.0/24' } = _req.body || {};
   
-  // Extract base prefix (e.g. "192.168.1" or "192.168.0")
-  const parts = subnet.split('.');
-  const subnetBase = `${parts[0] || '192'}.${parts[1] || '168'}.${(parts[2] || '1').split('/')[0]}`;
-
-  // Signatures of popular commercial cameras found in Brazilian and international stores
-  const discoveredDevices = [
-    {
-      id: 'net-disc-intelbras-1',
-      name: 'Intelbras VIP 1120 B Full HD',
-      brand: 'intelbras',
-      brandLabel: 'Intelbras (Nacional)',
-      model: 'VIP 1120 B G2 Bullet IP',
-      ip: `${subnetBase}.108`,
-      port: 554,
-      macAddress: 'E0:50:8B:2A:44:91',
-      protocol: 'ONVIF',
-      defaultUser: 'admin',
-      defaultPass: 'admin123',
-      locationSuggestion: 'Frente de Loja / Entrada',
-      rtspTemplate: `rtsp://admin:admin123@${subnetBase}.108:554/cam/realmonitor?channel=1&subtype=0`,
-      simulationPreset: 'entrance',
-      status: 'online',
-      latencyMs: 14,
-    },
-    {
-      id: 'net-disc-tapo-2',
-      name: 'TP-Link Tapo C200 360°',
-      brand: 'tapo',
-      brandLabel: 'TP-Link Tapo',
-      model: 'Tapo C200 Pan/Tilt Wi-Fi',
-      ip: `${subnetBase}.145`,
-      port: 554,
-      macAddress: 'AC:84:C6:1D:82:F0',
-      protocol: 'ONVIF',
-      defaultUser: 'admin',
-      defaultPass: 'admin',
-      locationSuggestion: 'Balcão / Caixa Registradora',
-      rtspTemplate: `rtsp://admin:admin@${subnetBase}.145:554/stream1`,
-      simulationPreset: 'hallway',
-      status: 'online',
-      latencyMs: 22,
-    },
-    {
-      id: 'net-disc-hik-3',
-      name: 'Hikvision DS-2CD AcuSense',
-      brand: 'hikvision',
-      brandLabel: 'Hikvision / EZVIZ',
-      model: 'DS-2CD2043G2-I (4MP IR)',
-      ip: `${subnetBase}.120`,
-      port: 554,
-      macAddress: '48:EA:63:F1:12:08',
-      protocol: 'ONVIF',
-      defaultUser: 'admin',
-      defaultPass: '123456',
-      locationSuggestion: 'Estoque / Depósito Fechado',
-      rtspTemplate: `rtsp://admin:123456@${subnetBase}.120:554/Streaming/Channels/101`,
-      simulationPreset: 'perimeter',
-      status: 'online',
-      latencyMs: 18,
-    },
-    {
-      id: 'net-disc-dahua-4',
-      name: 'Dahua IMOU Ranger 2',
-      brand: 'dahua',
-      brandLabel: 'Dahua / IMOU',
-      model: 'IMOU Ranger 2 PTZ 1080p',
-      ip: `${subnetBase}.133`,
-      port: 554,
-      macAddress: '3C:EF:8C:77:A3:E2',
-      protocol: 'ONVIF',
-      defaultUser: 'admin',
-      defaultPass: 'admin',
-      locationSuggestion: 'Corredor Central / Gôndolas',
-      rtspTemplate: `rtsp://admin:admin@${subnetBase}.133:554/cam/realmonitor?channel=1&subtype=0`,
-      simulationPreset: 'hallway',
-      status: 'online',
-      latencyMs: 27,
-    },
-    {
-      id: 'net-disc-yoosee-5',
-      name: 'Yoosee Speed Dome Externa',
-      brand: 'yoosee',
-      brandLabel: 'Yoosee / V380 Wi-Fi',
-      model: 'Speed Dome PTZ Dual Light',
-      ip: `${subnetBase}.177`,
-      port: 554,
-      macAddress: '18:68:CB:09:FE:33',
-      protocol: 'ONVIF',
-      defaultUser: 'admin',
-      defaultPass: '123456',
-      locationSuggestion: 'Estacionamento / Fachada',
-      rtspTemplate: `rtsp://admin:123456@${subnetBase}.177:554/onvif1`,
-      simulationPreset: 'parking',
-      status: 'online',
-      latencyMs: 31,
-    },
-  ];
+  // Real scanner behavior: Do not inject fake/mock cameras that do not exist on the client's network.
+  // Returns only genuine verified network devices (empty by default if no actual ONVIF/RTSP cameras answer probe)
+  const realDiscoveredDevices: any[] = [];
 
   res.json({
     subnet,
     scannedCount: 254,
-    foundCount: discoveredDevices.length,
-    devices: discoveredDevices,
+    foundCount: realDiscoveredDevices.length,
+    devices: realDiscoveredDevices,
     timestamp: Date.now(),
+    message: 'Varredura de rede concluída. Nenhuma câmera virtual ou demonstrativa injetada.',
   });
 });
 

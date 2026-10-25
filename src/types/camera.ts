@@ -6,6 +6,16 @@ export type SimulationPreset = 'entrance' | 'parking' | 'hallway' | 'perimeter';
 
 export type CloudStorageDestination = 'local' | 'google_drive';
 
+export type UserRole = 'admin' | 'operador';
+
+export interface UserProfile {
+  id: string;
+  name: string;
+  email: string;
+  role: UserRole;
+  assignedBusinessId?: string;
+}
+
 export interface ClientBusiness {
   id: string;
   name: string;

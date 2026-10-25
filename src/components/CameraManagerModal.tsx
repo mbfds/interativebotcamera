@@ -1,6 +1,5 @@
-import React from 'react';
-import { X, Trash2, Sliders, Shield, Video, Volume2, VolumeX, Eye } from 'lucide-react';
-import { CameraConfig } from '../types/camera';
+import { X, Trash2, Sliders, Shield, Video, Volume2, VolumeX, Eye, Lock } from 'lucide-react';
+import { CameraConfig, UserRole } from '../types/camera';
 
 interface CameraManagerModalProps {
   isOpen: boolean;
@@ -9,6 +8,7 @@ interface CameraManagerModalProps {
   onUpdateCamera: (camera: CameraConfig) => void;
   onDeleteCamera: (id: string) => void;
   onOpenAddModal: () => void;
+  currentUserRole?: UserRole;
 }
 
 export const CameraManagerModal: React.FC<CameraManagerModalProps> = ({
@@ -18,6 +18,7 @@ export const CameraManagerModal: React.FC<CameraManagerModalProps> = ({
   onUpdateCamera,
   onDeleteCamera,
   onOpenAddModal,
+  currentUserRole = 'admin',
 }) => {
   if (!isOpen) return null;
 
@@ -67,17 +68,26 @@ export const CameraManagerModal: React.FC<CameraManagerModalProps> = ({
                   </div>
                 </div>
 
-                <button
-                  onClick={() => {
-                    if (confirm(`Remover a câmera "${cam.name}"?`)) {
-                      onDeleteCamera(cam.id);
-                    }
-                  }}
-                  className="p-1.5 text-neutral-500 hover:text-red-400 hover:bg-neutral-800 rounded-lg transition-colors"
-                  title="Remover câmera"
-                >
-                  <Trash2 className="w-4 h-4" />
-                </button>
+                {currentUserRole === 'admin' ? (
+                  <button
+                    onClick={() => {
+                      if (confirm(`Remover a câmera "${cam.name}"?`)) {
+                        onDeleteCamera(cam.id);
+                      }
+                    }}
+                    className="p-1.5 text-neutral-500 hover:text-red-400 hover:bg-neutral-800 rounded-lg transition-colors"
+                    title="Remover câmera (Administrador)"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                ) : (
+                  <div
+                    className="p-1.5 text-neutral-600 rounded-lg cursor-not-allowed"
+                    title="Exclusão de câmera restrita a Administradores"
+                  >
+                    <Lock className="w-4 h-4" />
+                  </div>
+                )}
               </div>
 
               {/* Settings row */}
@@ -159,15 +169,22 @@ export const CameraManagerModal: React.FC<CameraManagerModalProps> = ({
           ))}
 
           {/* Add Camera Action inside manager */}
-          <button
-            onClick={() => {
-              onClose();
-              onOpenAddModal();
-            }}
-            className="w-full py-3 border border-dashed border-neutral-700 hover:border-blue-500 rounded-xl text-neutral-400 hover:text-blue-400 text-xs font-medium transition-colors flex items-center justify-center gap-2"
-          >
-            <span>+ Adicionar Outra Câmera</span>
-          </button>
+          {currentUserRole === 'admin' ? (
+            <button
+              onClick={() => {
+                onClose();
+                onOpenAddModal();
+              }}
+              className="w-full py-3 border border-dashed border-neutral-700 hover:border-blue-500 rounded-xl text-neutral-400 hover:text-blue-400 text-xs font-medium transition-colors flex items-center justify-center gap-2"
+            >
+              <span>+ Adicionar Outra Câmera</span>
+            </button>
+          ) : (
+            <div className="w-full py-2.5 border border-neutral-800 rounded-xl text-neutral-500 text-xs text-center flex items-center justify-center gap-1.5 bg-neutral-950/40">
+              <Lock className="w-3.5 h-3.5" />
+              <span>Inclusão e exclusão de câmeras permitida apenas para Administradores</span>
+            </div>
+          )}
         </div>
 
         {/* Footer */}

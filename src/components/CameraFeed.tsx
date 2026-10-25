@@ -22,6 +22,7 @@ import { MotionDetector } from '../utils/motionDetector';
 import { StreamSimulator } from '../utils/streamSimulator';
 import { saveRecordingToDB, saveEventToDB } from '../services/db';
 import { playMotionAlarm, playRecordBeep, playAIThreatAlarm } from '../utils/soundAlert';
+import { sendHighThreatBrowserNotification } from '../utils/browserNotifications';
 import { PTZControls } from './PTZControls';
 
 interface CameraFeedProps {
@@ -191,9 +192,17 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({
       if (!isRecording) {
         startRecording('motion');
       }
+
+      // Dispatch Web Browser Notification to alert user even if tab is in background/minimized
+      sendHighThreatBrowserNotification({
+        cameraName: camera.name,
+        threatScore: score,
+        reason,
+        location: camera.location,
+      });
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [camera.soundAlarmEnabled, soundEnabled, isRecording]
+    [camera.soundAlarmEnabled, soundEnabled, isRecording, camera.name, camera.location]
   );
 
   // Sync external high threat alert from AI analysis
