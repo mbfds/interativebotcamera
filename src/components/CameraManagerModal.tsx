@@ -1,5 +1,6 @@
 import { X, Trash2, Sliders, Shield, Video, Volume2, VolumeX, Eye, Lock, Wifi, ShieldCheck } from 'lucide-react';
 import { CameraConfig, UserRole } from '../types/camera';
+import { CameraScheduleEditor } from './CameraScheduleEditor';
 
 interface CameraManagerModalProps {
   isOpen: boolean;
@@ -84,7 +85,11 @@ export const CameraManagerModal: React.FC<CameraManagerModalProps> = ({
                     <span className="text-neutral-400">{cam.location}</span>
                     <span className="text-neutral-600 mx-1.5">·</span>
                     <span className="text-neutral-400 font-mono uppercase text-[11px]">
-                      {cam.type === 'webcam' ? 'Webcam USB' : cam.type === 'ip_stream' ? 'Stream IP' : 'Simulador CCTV'}
+                      {cam.type === 'webcam'
+                        ? 'Webcam USB'
+                        : cam.type === 'ip_stream'
+                        ? 'Stream IP'
+                        : 'Câmera IP (RTSP/ONVIF)'}
                     </span>
                   </div>
                 </div>
@@ -172,20 +177,31 @@ export const CameraManagerModal: React.FC<CameraManagerModalProps> = ({
                       max="90"
                       value={cam.motionSensitivity}
                       onChange={(e) =>
-                        onUpdateCamera({ ...cam, motionSensitivity: parseInt(e.target.value) })
+                        onUpdateCamera({ ...cam, motionSensitivity: parseInt(e.target.value, 10) })
                       }
                       className="w-full accent-blue-500 h-1 bg-neutral-700 rounded-lg cursor-pointer"
                     />
                   </div>
                 )}
 
-                {/* Critical Network Endpoint & RTSP Config - Hidden for Operator */}
+                {/* Per-Camera Recording Schedule */}
+                <div className="sm:col-span-2">
+                  <CameraScheduleEditor
+                    schedule={cam.recordingSchedule}
+                    readOnly={currentUserRole !== 'admin'}
+                    onChange={(recordingSchedule) =>
+                      onUpdateCamera({ ...cam, recordingSchedule })
+                    }
+                  />
+                </div>
+
+                {/* Critical Network Endpoint & Stream Config - Hidden for Operator */}
                 {currentUserRole === 'admin' && (cam.ipHost || cam.streamUrl) && (
-                  <div className="sm:col-span-2 p-2.5 bg-neutral-900/90 rounded-lg border border-neutral-800 text-[11px] font-mono space-y-1">
+                  <div className="sm:col-span-2 p-2.5 bg-neutral-900/90 rounded-lg border border-neutral-800 text-[11px] font-mono space-y-2">
                     <div className="flex items-center justify-between text-neutral-400">
                       <span className="flex items-center gap-1.5 text-cyan-300 font-sans font-semibold text-xs">
                         <Wifi className="w-3.5 h-3.5 text-cyan-400" />
-                        Configuração de Rede & RTSP (Admin)
+                        Configuração de Rede &amp; Stream (Admin)
                       </span>
                       <span className="text-[10px] text-neutral-500">Porta: {cam.ipPort || 554}</span>
                     </div>
@@ -194,11 +210,17 @@ export const CameraManagerModal: React.FC<CameraManagerModalProps> = ({
                         <span className="text-neutral-500">Host IP:</span> {cam.ipHost} · Canal {cam.ipChannel || 1}
                       </p>
                     )}
-                    {cam.streamUrl && (
-                      <p className="text-neutral-400 text-[10px] truncate" title={cam.streamUrl}>
-                        <span className="text-neutral-500">Stream:</span> {cam.streamUrl}
-                      </p>
-                    )}
+                    <div>
+                      <label className="block text-[10px] text-neutral-500 mb-1">
+                        URL do Stream (RTSP / HLS / HTTP)
+                      </label>
+                      <input
+                        type="text"
+                        value={cam.streamUrl || ''}
+                        onChange={(e) => onUpdateCamera({ ...cam, streamUrl: e.target.value })}
+                        className="w-full bg-neutral-950 border border-neutral-800 rounded px-2 py-1 text-[11px] text-neutral-200 font-mono focus:outline-none focus:border-blue-500"
+                      />
+                    </div>
                   </div>
                 )}
               </div>

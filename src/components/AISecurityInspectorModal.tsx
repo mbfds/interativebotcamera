@@ -76,7 +76,7 @@ export const AISecurityInspectorModal: React.FC<AISecurityInspectorModalProps> =
                 </span>
               </div>
               <p className="text-xs text-neutral-400">
-                {business?.name || 'Comércio Local'} · {camera?.name || 'Câmera'}
+                {business?.name || 'Unidade Monitorada'} · {camera?.name || 'Câmera'}
               </p>
             </div>
           </div>
@@ -115,7 +115,7 @@ export const AISecurityInspectorModal: React.FC<AISecurityInspectorModalProps> =
             }`}
           >
             <FileText className="w-3.5 h-3.5" />
-            <span>Relatório Diário do Comércio</span>
+            <span>Relatório Diário da Unidade</span>
           </button>
         </div>
 
@@ -205,7 +205,7 @@ export const AISecurityInspectorModal: React.FC<AISecurityInspectorModalProps> =
                   <div className="p-4 rounded-xl bg-neutral-950/60 border border-neutral-800 space-y-2">
                     <h4 className="font-semibold text-neutral-200 flex items-center gap-1.5">
                       <CheckCircle className="w-4 h-4 text-emerald-400" />
-                      <span>Elementos Reconhecidos no Comércio</span>
+                      <span>Elementos Reconhecidos na Cena</span>
                     </h4>
                     <ul className="space-y-1.5 text-neutral-300">
                       {analysis.detectedElements.map((el, i) => (
@@ -246,7 +246,7 @@ export const AISecurityInspectorModal: React.FC<AISecurityInspectorModalProps> =
                 <div className="p-4 rounded-xl bg-neutral-950/80 border border-neutral-800 space-y-2">
                   <h4 className="font-semibold text-neutral-200 flex items-center gap-1.5">
                     <ShieldCheck className="w-4 h-4 text-purple-400" />
-                    <span>Recomendações da IA para o Comércio</span>
+                    <span>Recomendações da IA</span>
                   </h4>
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-1">
                     {analysis.recommendations.map((rec, i) => (
@@ -282,7 +282,8 @@ export const AISecurityInspectorModal: React.FC<AISecurityInspectorModalProps> =
                     <div>
                       <h3 className="text-sm font-bold text-neutral-100">{dailyReport.reportTitle}</h3>
                       <p className="text-[11px] text-neutral-400">
-                        {business?.name} · Gerado para {business?.ownerEmail || 'Proprietário'}
+                        {business?.name || 'Unidade Monitorada'}
+                        {business?.ownerEmail ? ` · ${business.ownerEmail}` : ''}
                       </p>
                     </div>
                     <div className="flex items-center gap-2">
@@ -339,7 +340,7 @@ export const AISecurityInspectorModal: React.FC<AISecurityInspectorModalProps> =
                 </div>
               ) : (
                 <div className="py-12 text-center text-neutral-500">
-                  <p>Clique abaixo para gerar o relatório do comércio hoje.</p>
+                  <p>Clique abaixo para gerar o relatório de hoje.</p>
                   <button
                     onClick={onGenerateDailyReport}
                     className="mt-3 px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-xs font-medium"
@@ -355,7 +356,7 @@ export const AISecurityInspectorModal: React.FC<AISecurityInspectorModalProps> =
         {/* Footer Actions */}
         <div className="px-6 py-3.5 bg-neutral-950 border-t border-neutral-800 flex items-center justify-between text-xs">
           <div className="text-[11px] text-neutral-500">
-            Administração de CFTV Comercial com Gemini AI
+            Auditoria de Segurança CFTV com Gemini AI
           </div>
 
           <div className="flex items-center gap-2">

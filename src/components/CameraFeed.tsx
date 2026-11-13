@@ -6,23 +6,31 @@ import {
   Minimize2,
   Moon,
   Sun,
-  Activity,
   Sliders,
-  AlertCircle,
   VideoOff,
   Sparkles,
   Volume2,
   VolumeX,
   ShieldAlert,
-  BellOff,
-  BellRing,
+  CalendarClock,
+  PauseCircle,
+  Wifi,
+  RefreshCw,
 } from 'lucide-react';
-import { CameraConfig, MotionEvent, RecordingItem, UserRole } from '../types/camera';
+import {
+  CameraConfig,
+  MotionEvent,
+  RecordingItem,
+  RecordingMotionMarker,
+  DetectedObjectTag,
+  UserRole,
+} from '../types/camera';
 import { MotionDetector } from '../utils/motionDetector';
-import { StreamSimulator } from '../utils/streamSimulator';
-import { saveRecordingToDB, saveEventToDB } from '../services/db';
+import { saveRecordingToDB, saveEventToDB, DEFAULT_UNIT_ID } from '../services/db';
 import { playMotionAlarm, playRecordBeep, playAIThreatAlarm } from '../utils/soundAlert';
 import { sendHighThreatBrowserNotification } from '../utils/browserNotifications';
+import { evaluateRecordingSchedule } from '../utils/recordingSchedule';
+import { probeSingleCameraIp } from '../utils/networkDiscovery';
 import { PTZControls } from './PTZControls';
 
 interface CameraFeedProps {
@@ -41,7 +49,23 @@ interface CameraFeedProps {
     timestamp: number;
   } | null;
   onDismissThreatAlert?: () => void;
+  latestAiTags?: {
+    detectedObjects: DetectedObjectTag[];
+    detectedElements: string[];
+    summary?: string;
+  } | null;
   currentUserRole?: UserRole;
+}
+
+function isBrowserPlayableUrl(url?: string): boolean {
+  if (!url) return false;
+  const trimmed = url.trim().toLowerCase();
+  return (
+    trimmed.startsWith('http://') ||
+    trimmed.startsWith('https://') ||
+    trimmed.startsWith('/') ||
+    trimmed.startsWith('blob:')
+  );
 }
 
 export const CameraFeed: React.FC<CameraFeedProps> = ({
@@ -55,29 +79,39 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({
   onAnalyzeAI,
   externalThreatAlert,
   onDismissThreatAlert,
+  latestAiTags,
   currentUserRole = 'admin',
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
-  const simulatorRef = useRef<StreamSimulator | null>(null);
+  const activeStreamRef = useRef<MediaStream | null>(null);
   const motionDetectorRef = useRef<MotionDetector | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordedChunksRef = useRef<Blob[]>([]);
   const autoRecordTimerRef = useRef<number | null>(null);
 
-  // Per-camera sound configuration
   const isCameraSoundEnabled = camera.soundAlarmEnabled !== false;
 
-  // Stream state
+  // Stream & RTSP Probe State
   const [activeStream, setActiveStream] = useState<MediaStream | null>(null);
   const [streamError, setStreamError] = useState<string | null>(null);
   const [isLoadingStream, setIsLoadingStream] = useState<boolean>(true);
+  const [rtspStatus, setRtspStatus] = useState<{
+    checked: boolean;
+    reachable: boolean;
+    latencyMs?: number;
+    message: string;
+  } | null>(null);
+  const [isCheckingRtsp, setIsCheckingRtsp] = useState(false);
 
   // Recording state
   const [isRecording, setIsRecording] = useState<boolean>(false);
   const [recordDuration, setRecordDuration] = useState<number>(0);
   const [recordTrigger, setRecordTrigger] = useState<'manual' | 'motion'>('manual');
   const recordIntervalRef = useRef<number | null>(null);
+  const recordingStartTimeRef = useRef<number>(0);
+  const recordingMotionMarkersRef = useRef<RecordingMotionMarker[]>([]);
+  const lastMarkerTimeRef = useRef<number>(0);
 
   // Motion Detection state
   const [motionScore, setMotionScore] = useState<number>(0);
@@ -101,11 +135,14 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({
     activeAIThreatRef.current = activeAIThreat;
   }, [activeAIThreat]);
 
-  // UI Controls
+  // UI Controls & Recording Schedule Evaluation
   const [showPTZ, setShowPTZ] = useState<boolean>(false);
   const [clockString, setClockString] = useState<string>('');
+  const [scheduleStatus, setScheduleStatus] = useState(() =>
+    evaluateRecordingSchedule(camera.recordingSchedule)
+  );
 
-  // Clock OSD
+  // Clock OSD & Schedule Evaluation loop
   useEffect(() => {
     const updateClock = () => {
       const now = new Date();
@@ -119,11 +156,12 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({
           second: '2-digit',
         })
       );
+      setScheduleStatus(evaluateRecordingSchedule(camera.recordingSchedule, now));
     };
     updateClock();
     const interval = setInterval(updateClock, 1000);
     return () => clearInterval(interval);
-  }, []);
+  }, [camera.recordingSchedule]);
 
   // Cleanup active siren on unmount
   useEffect(() => {
@@ -135,7 +173,6 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({
     };
   }, []);
 
-  // Toggle individual camera sound alert setting
   const toggleCameraSound = () => {
     const newSoundState = !isCameraSoundEnabled;
     onUpdateCamera({
@@ -143,19 +180,16 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({
       soundAlarmEnabled: newSoundState,
     });
 
-    // If camera was muted while siren was sounding, stop siren immediately
     if (!newSoundState && activeSirenHandleRef.current) {
       activeSirenHandleRef.current.stop();
       activeSirenHandleRef.current = null;
     } else if (newSoundState && activeAIThreat && activeAIThreat.level === 'alto' && soundEnabled) {
-      // If camera unmuted while high threat is active, resume emergency siren
       if (!activeSirenHandleRef.current) {
         activeSirenHandleRef.current = playAIThreatAlarm();
       }
     }
   };
 
-  // Silence currently active AI Threat Alarm
   const silenceAIThreat = () => {
     if (activeSirenHandleRef.current) {
       activeSirenHandleRef.current.stop();
@@ -165,7 +199,6 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({
     onDismissThreatAlert?.();
   };
 
-  // Stop siren if global sound toggle is turned off
   useEffect(() => {
     if (!soundEnabled && activeSirenHandleRef.current) {
       activeSirenHandleRef.current.stop();
@@ -173,360 +206,27 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({
     }
   }, [soundEnabled]);
 
-  // Trigger AI High Threat Alert
-  const triggerAIThreatAlert = useCallback(
-    (score: number = 88, reason: string = 'Ameaça de intrusão / violação detectada pela IA') => {
-      const threatObj = { level: 'alto' as const, score, reason };
-      setActiveAIThreat(threatObj);
-      activeAIThreatRef.current = threatObj;
-
-      // Play emergency siren ONLY IF:
-      // 1. This specific camera has sound enabled (soundAlarmEnabled !== false)
-      // 2. The global sound setting is enabled
-      if (camera.soundAlarmEnabled !== false && soundEnabled) {
-        if (activeSirenHandleRef.current) {
-          activeSirenHandleRef.current.stop();
-        }
-        activeSirenHandleRef.current = playAIThreatAlarm();
-      }
-
-      // Auto start recording high threat incident
-      if (!isRecording) {
-        startRecording('motion');
-      }
-
-      // Dispatch Web Browser Notification to alert user even if tab is in background/minimized
-      sendHighThreatBrowserNotification({
-        cameraName: camera.name,
-        threatScore: score,
-        reason,
-        location: camera.location,
-      });
-    },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [camera.soundAlarmEnabled, soundEnabled, isRecording, camera.name, camera.location]
-  );
-
-  // Sync external high threat alert from AI analysis
-  const lastAlertTimestampRef = useRef<number>(0);
-  useEffect(() => {
-    if (
-      externalThreatAlert &&
-      externalThreatAlert.level === 'alto' &&
-      externalThreatAlert.timestamp !== lastAlertTimestampRef.current
-    ) {
-      lastAlertTimestampRef.current = externalThreatAlert.timestamp;
-      triggerAIThreatAlert(externalThreatAlert.score, externalThreatAlert.reason);
-    }
-  }, [externalThreatAlert, triggerAIThreatAlert]);
-
-  // Initialize camera stream
-  useEffect(() => {
-    let isCancelled = false;
-    setIsLoadingStream(true);
-    setStreamError(null);
-
-    const setupStream = async () => {
-      try {
-        if (camera.type === 'webcam') {
-          // Request user webcam
-          const constraints: MediaStreamConstraints = {
-            video: camera.deviceId
-              ? { deviceId: { exact: camera.deviceId }, width: { ideal: 1280 }, height: { ideal: 720 } }
-              : { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' },
-            audio: camera.enableAudio,
-          };
-
-          const stream = await navigator.mediaDevices.getUserMedia(constraints);
-          if (isCancelled) {
-            stream.getTracks().forEach((t) => t.stop());
-            return;
-          }
-
-          setActiveStream(stream);
-          if (videoRef.current) {
-            videoRef.current.srcObject = stream;
-            videoRef.current.play().catch(() => {});
-          }
-          setIsLoadingStream(false);
-        } else if (camera.type === 'simulated' || camera.type === 'commercial_ip') {
-          // Simulated CCTV feed or commercial camera stream simulation
-          const simulator = new StreamSimulator(camera.simulationPreset || 'entrance');
-          simulatorRef.current = simulator;
-          const stream = simulator.getStream();
-
-          if (isCancelled) {
-            simulator.destroy();
-            return;
-          }
-
-          setActiveStream(stream);
-          if (videoRef.current) {
-            videoRef.current.srcObject = stream;
-            videoRef.current.play().catch(() => {});
-          }
-          setIsLoadingStream(false);
-        } else if (camera.type === 'ip_stream') {
-          // IP / HLS / MJPEG camera stream
-          if (!camera.streamUrl) {
-            setStreamError('URL do stream IP não configurada');
-            setIsLoadingStream(false);
-            return;
-          }
-          if (videoRef.current) {
-            videoRef.current.src = camera.streamUrl;
-            videoRef.current.play().catch((err) => {
-              setStreamError(`Erro ao conectar stream IP: ${err.message || 'Falha de rede'}`);
-            });
-          }
-          setIsLoadingStream(false);
-        }
-      } catch (err: unknown) {
-        const error = err as Error;
-        if (!isCancelled) {
-          setStreamError(
-            error.name === 'NotAllowedError'
-              ? 'Permissão de câmera negada no navegador. Permita o acesso à câmera para visualizar.'
-              : `Não foi possível iniciar câmera: ${error.message}`
-          );
-          setIsLoadingStream(false);
-        }
-      }
-    };
-
-    setupStream();
-
-    return () => {
-      isCancelled = true;
-      if (simulatorRef.current) {
-        simulatorRef.current.destroy();
-        simulatorRef.current = null;
-      }
-      if (activeStream) {
-        activeStream.getTracks().forEach((track) => track.stop());
-      }
-    };
-  }, [camera.type, camera.deviceId, camera.streamUrl, camera.simulationPreset, camera.enableAudio]);
-
-  // Motion Detection Analyzer loop
-  useEffect(() => {
-    if (!camera.motionDetectionEnabled) {
-      setMotionScore(0);
-      setIsMotionTriggered(false);
-      return;
-    }
-
-    if (!motionDetectorRef.current) {
-      motionDetectorRef.current = new MotionDetector();
-    }
-
-    let intervalId: number;
-
-    const checkMotion = () => {
-      if (!videoRef.current || videoRef.current.readyState < 2) return;
-
-      const result = motionDetectorRef.current?.analyze(
-        videoRef.current,
-        camera.motionSensitivity
-      );
-
-      if (result) {
-        setMotionScore(result.score);
-        setIsMotionTriggered(result.isMotion);
-
-        if (result.isMotion) {
-          const now = Date.now();
-          // Rate-limit sound alarm to once every 4 seconds
-          if (now - lastAlarmTimeRef.current > 4000) {
-            lastAlarmTimeRef.current = now;
-            // Respect individual camera sound alert setting
-            if (soundEnabled && isCameraSoundEnabled) {
-              playMotionAlarm();
-            }
-
-            // Log event
-            const motionEvent: MotionEvent = {
-              id: `evt-${Date.now()}`,
-              tenantId: camera.tenantId || 'biz-demo-1',
-              cameraId: camera.id,
-              cameraName: camera.name,
-              timestamp: now,
-              intensity: result.score,
-            };
-            saveEventToDB(motionEvent);
-            onMotionEventLogged(motionEvent);
-          }
-
-          // Trigger Auto-record if enabled and not currently recording
-          if (camera.autoRecordOnMotion && !isRecording) {
-            startRecording('motion');
-          }
-        }
-      }
-    };
-
-    intervalId = window.setInterval(checkMotion, 180);
-
-    return () => {
-      clearInterval(intervalId);
-    };
-  }, [
-    camera.motionDetectionEnabled,
-    camera.motionSensitivity,
-    camera.autoRecordOnMotion,
-    isRecording,
-    soundEnabled,
-    isCameraSoundEnabled,
-    camera.tenantId,
-    camera.id,
-    camera.name,
-    onMotionEventLogged,
-  ]);
-
-  // Capture current video frame as base64 JPEG
-  const captureFrameSnapshot = useCallback((): string => {
-    if (!videoRef.current) return '';
+  const checkRtspReachability = useCallback(async () => {
+    if (!camera.ipHost) return;
+    setIsCheckingRtsp(true);
     try {
-      const snapCanvas = document.createElement('canvas');
-      snapCanvas.width = 320;
-      snapCanvas.height = 180;
-      const snapCtx = snapCanvas.getContext('2d');
-      if (!snapCtx) return '';
-      snapCtx.drawImage(videoRef.current, 0, 0, 320, 180);
-      return snapCanvas.toDataURL('image/jpeg', 0.8);
-    } catch {
-      return '';
-    }
-  }, []);
-
-  // Start Recording
-  const startRecording = useCallback((trigger: 'manual' | 'motion' = 'manual') => {
-    if (isRecording) return;
-
-    let streamToRecord: MediaStream | null = activeStream;
-
-    // Fallback: capture stream from canvas if video element is playing but no activeStream
-    if (!streamToRecord && videoRef.current) {
-      try {
-        const streamFromVideo = (videoRef.current as unknown as { captureStream?: () => MediaStream }).captureStream?.();
-        if (streamFromVideo) {
-          streamToRecord = streamFromVideo;
-        }
-      } catch {
-        // Fallback capture failed
-      }
-    }
-
-    if (!streamToRecord) {
-      alert('Não há fluxo de vídeo disponível para gravar nesta câmera.');
-      return;
-    }
-
-    try {
-      const mimeTypes = [
-        'video/webm;codecs=vp9',
-        'video/webm;codecs=vp8',
-        'video/webm',
-        'video/mp4',
-      ];
-      let selectedMime = '';
-      for (const mime of mimeTypes) {
-        if (MediaRecorder.isTypeSupported(mime)) {
-          selectedMime = mime;
-          break;
-        }
-      }
-
-      const recorder = new MediaRecorder(streamToRecord, {
-        mimeType: selectedMime || undefined,
+      const res = await probeSingleCameraIp(camera.ipHost, camera.ipPort || 554, []);
+      setRtspStatus({
+        checked: true,
+        reachable: res.reachable,
+        latencyMs: res.device?.latencyMs,
+        message: res.message,
       });
-
-      recordedChunksRef.current = [];
-      const thumbnailSnapshot = captureFrameSnapshot();
-      const startTime = Date.now();
-
-      recorder.ondataavailable = (e) => {
-        if (e.data && e.data.size > 0) {
-          recordedChunksRef.current.push(e.data);
-        }
-      };
-
-      recorder.onstop = async () => {
-        const chunks = recordedChunksRef.current;
-        if (chunks.length === 0) return;
-
-        const blob = new Blob(chunks, { type: selectedMime || 'video/webm' });
-        const elapsedSec = Math.max(1, Math.round((Date.now() - startTime) / 1000));
-
-        const isCriticalIncident = Boolean(
-          activeAIThreatRef.current?.level === 'alto' ||
-          (externalThreatAlert && externalThreatAlert.level === 'alto')
-        );
-
-        const threatScore = activeAIThreatRef.current?.score || externalThreatAlert?.score || 85;
-        const threatReason =
-          activeAIThreatRef.current?.reason ||
-          externalThreatAlert?.reason ||
-          'Detecção de evento crítico pela IA';
-
-        const recording: RecordingItem = {
-          id: `rec-${Date.now()}`,
-          tenantId: camera.tenantId || 'biz-demo-1',
-          cameraId: camera.id,
-          cameraName: camera.name,
-          cameraLocation: camera.location,
-          timestamp: startTime,
-          durationSeconds: elapsedSec,
-          fileSizeBytes: blob.size,
-          triggerType: trigger,
-          blob,
-          thumbnailDataUrl: thumbnailSnapshot,
-          mimeType: selectedMime || 'video/webm',
-          isCritical: isCriticalIncident,
-          aiThreatLevel: isCriticalIncident ? 'alto' : undefined,
-          aiThreatScore: isCriticalIncident ? threatScore : undefined,
-          aiThreatReason: isCriticalIncident ? threatReason : undefined,
-          aiAnalysisSummary: isCriticalIncident
-            ? `Alerta Crítico IA (${threatScore}%): ${threatReason}`
-            : undefined,
-        };
-
-        await saveRecordingToDB(recording);
-        onRecordingSaved();
-
-        if (soundEnabled && isCameraSoundEnabled) {
-          playRecordBeep(false);
-        }
-      };
-
-      recorder.start(1000); // 1s slice
-      mediaRecorderRef.current = recorder;
-      setIsRecording(true);
-      setRecordTrigger(trigger);
-      setRecordDuration(0);
-
-      if (soundEnabled && isCameraSoundEnabled) {
-        playRecordBeep(true);
-      }
-
-      // Elapsed timer
-      recordIntervalRef.current = window.setInterval(() => {
-        setRecordDuration((prev) => prev + 1);
-      }, 1000);
-
-      // Auto stop if triggered by motion
-      if (trigger === 'motion') {
-        const autoDuration = (camera.autoRecordDuration || 10) * 1000;
-        if (autoRecordTimerRef.current) clearTimeout(autoRecordTimerRef.current);
-        autoRecordTimerRef.current = window.setTimeout(() => {
-          stopRecording();
-        }, autoDuration);
-      }
     } catch (err: unknown) {
-      const error = err as Error;
-      alert(`Falha ao iniciar gravação: ${error.message}`);
+      setRtspStatus({
+        checked: true,
+        reachable: false,
+        message: err instanceof Error ? err.message : 'Host RTSP inacessível',
+      });
+    } finally {
+      setIsCheckingRtsp(false);
     }
-  }, [isRecording, activeStream, camera, captureFrameSnapshot, onRecordingSaved, soundEnabled, isCameraSoundEnabled]);
+  }, [camera.ipHost, camera.ipPort]);
 
   // Stop Recording
   const stopRecording = useCallback(() => {
@@ -546,7 +246,414 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({
     setRecordDuration(0);
   }, []);
 
-  // Take Instant Snapshot photo and download
+  // Capture current video frame as base64 JPEG
+  const captureFrameSnapshot = useCallback((): string => {
+    if (!videoRef.current || videoRef.current.readyState < 2) return '';
+    try {
+      const snapCanvas = document.createElement('canvas');
+      snapCanvas.width = 320;
+      snapCanvas.height = 180;
+      const snapCtx = snapCanvas.getContext('2d');
+      if (!snapCtx) return '';
+      snapCtx.drawImage(videoRef.current, 0, 0, 320, 180);
+      return snapCanvas.toDataURL('image/jpeg', 0.8);
+    } catch {
+      return '';
+    }
+  }, []);
+
+  // Start Recording
+  const startRecording = useCallback(
+    (trigger: 'manual' | 'motion' = 'manual') => {
+      if (isRecording) return;
+
+      let streamToRecord: MediaStream | null = activeStream;
+
+      if (!streamToRecord && videoRef.current && videoRef.current.readyState >= 2) {
+        try {
+          const streamFromVideo = (
+            videoRef.current as unknown as { captureStream?: () => MediaStream }
+          ).captureStream?.();
+          if (streamFromVideo) {
+            streamToRecord = streamFromVideo;
+          }
+        } catch {
+          // Cross-origin or unsupported stream capture
+        }
+      }
+
+      if (!streamToRecord) {
+        if (trigger === 'manual') {
+          setStreamError((prev) => prev || 'Sem fluxo de vídeo HTML5 ativo para gravar neste canal.');
+        }
+        return;
+      }
+
+      try {
+        const mimeTypes = [
+          'video/webm;codecs=vp9',
+          'video/webm;codecs=vp8',
+          'video/webm',
+          'video/mp4',
+        ];
+        let selectedMime = '';
+        for (const mime of mimeTypes) {
+          if (MediaRecorder.isTypeSupported(mime)) {
+            selectedMime = mime;
+            break;
+          }
+        }
+
+        const recorder = new MediaRecorder(streamToRecord, {
+          mimeType: selectedMime || undefined,
+        });
+
+        recordedChunksRef.current = [];
+        const thumbnailSnapshot = captureFrameSnapshot();
+        const startTime = Date.now();
+        recordingStartTimeRef.current = startTime;
+        lastMarkerTimeRef.current = 0;
+        recordingMotionMarkersRef.current =
+          trigger === 'motion'
+            ? [
+                {
+                  id: `mk-init-${startTime}`,
+                  offsetSeconds: 0.5,
+                  timestamp: startTime,
+                  intensity: Math.max(50, motionScore || 65),
+                  label:
+                    activeAIThreatRef.current?.level === 'alto'
+                      ? activeAIThreatRef.current.reason || 'Ameaça IA Detectada'
+                      : 'Início do Movimento',
+                  isCritical: activeAIThreatRef.current?.level === 'alto',
+                },
+              ]
+            : [];
+
+        recorder.ondataavailable = (e) => {
+          if (e.data && e.data.size > 0) {
+            recordedChunksRef.current.push(e.data);
+          }
+        };
+
+        recorder.onstop = async () => {
+          const chunks = recordedChunksRef.current;
+          if (chunks.length === 0) return;
+
+          const blob = new Blob(chunks, { type: selectedMime || 'video/webm' });
+          const elapsedSec = Math.max(1, Math.round((Date.now() - startTime) / 1000));
+
+          const isCriticalIncident = Boolean(
+            activeAIThreatRef.current?.level === 'alto' ||
+              (externalThreatAlert && externalThreatAlert.level === 'alto')
+          );
+
+          const threatScore = activeAIThreatRef.current?.score || externalThreatAlert?.score || 85;
+          const threatReason =
+            activeAIThreatRef.current?.reason ||
+            externalThreatAlert?.reason ||
+            'Detecção de evento crítico pela IA';
+
+          const collectedMarkers = [...recordingMotionMarkersRef.current].filter(
+            (m) => m.offsetSeconds <= elapsedSec
+          );
+
+          const recording: RecordingItem = {
+            id: `rec-${Date.now()}`,
+            tenantId: camera.tenantId || DEFAULT_UNIT_ID,
+            cameraId: camera.id,
+            cameraName: camera.name,
+            cameraLocation: camera.location,
+            timestamp: startTime,
+            durationSeconds: elapsedSec,
+            fileSizeBytes: blob.size,
+            triggerType: trigger,
+            blob,
+            thumbnailDataUrl: thumbnailSnapshot,
+            mimeType: selectedMime || 'video/webm',
+            isCritical: isCriticalIncident,
+            aiThreatLevel: isCriticalIncident ? 'alto' : undefined,
+            aiThreatScore: isCriticalIncident ? threatScore : undefined,
+            aiThreatReason: isCriticalIncident ? threatReason : undefined,
+            aiAnalysisSummary: isCriticalIncident
+              ? `Alerta Crítico IA (${threatScore}%): ${threatReason}`
+              : latestAiTags?.summary,
+            detectedObjects: latestAiTags?.detectedObjects,
+            detectedElements: latestAiTags?.detectedElements,
+            motionMarkers: collectedMarkers,
+          };
+
+          await saveRecordingToDB(recording);
+          onRecordingSaved();
+
+          if (soundEnabled && isCameraSoundEnabled) {
+            playRecordBeep(false);
+          }
+        };
+
+        recorder.start(1000);
+        mediaRecorderRef.current = recorder;
+        setIsRecording(true);
+        setRecordTrigger(trigger);
+        setRecordDuration(0);
+
+        if (soundEnabled && isCameraSoundEnabled) {
+          playRecordBeep(true);
+        }
+
+        recordIntervalRef.current = window.setInterval(() => {
+          setRecordDuration((prev) => prev + 1);
+        }, 1000);
+
+        if (trigger === 'motion') {
+          const autoDuration = (camera.autoRecordDuration || 10) * 1000;
+          if (autoRecordTimerRef.current) clearTimeout(autoRecordTimerRef.current);
+          autoRecordTimerRef.current = window.setTimeout(() => {
+            stopRecording();
+          }, autoDuration);
+        }
+      } catch (err: unknown) {
+        const error = err as Error;
+        setStreamError(`Falha ao iniciar gravação: ${error.message}`);
+      }
+    },
+    [
+      isRecording,
+      activeStream,
+      camera,
+      captureFrameSnapshot,
+      onRecordingSaved,
+      soundEnabled,
+      isCameraSoundEnabled,
+      externalThreatAlert,
+      latestAiTags,
+      motionScore,
+      stopRecording,
+    ]
+  );
+
+  const triggerAIThreatAlert = useCallback(
+    (score: number = 88, reason: string = 'Ameaça de intrusão detectada pela IA') => {
+      const threatObj = { level: 'alto' as const, score, reason };
+      setActiveAIThreat(threatObj);
+      activeAIThreatRef.current = threatObj;
+
+      if (camera.soundAlarmEnabled !== false && soundEnabled) {
+        if (activeSirenHandleRef.current) {
+          activeSirenHandleRef.current.stop();
+        }
+        activeSirenHandleRef.current = playAIThreatAlarm();
+      }
+
+      if (!isRecording) {
+        startRecording('motion');
+      } else if (recordingStartTimeRef.current > 0) {
+        const offsetSec = Math.max(0, Math.round((Date.now() - recordingStartTimeRef.current) / 1000));
+        recordingMotionMarkersRef.current.push({
+          id: `mk-ai-${Date.now()}`,
+          offsetSeconds: offsetSec,
+          timestamp: Date.now(),
+          intensity: score,
+          label: reason,
+          isCritical: true,
+        });
+      }
+
+      sendHighThreatBrowserNotification({
+        cameraName: camera.name,
+        threatScore: score,
+        reason,
+        location: camera.location,
+      });
+    },
+    [camera.soundAlarmEnabled, soundEnabled, isRecording, camera.name, camera.location, startRecording]
+  );
+
+  // Sync external high threat alert from AI analysis
+  const lastAlertTimestampRef = useRef<number>(0);
+  useEffect(() => {
+    if (
+      externalThreatAlert &&
+      externalThreatAlert.level === 'alto' &&
+      externalThreatAlert.timestamp !== lastAlertTimestampRef.current
+    ) {
+      lastAlertTimestampRef.current = externalThreatAlert.timestamp;
+      triggerAIThreatAlert(externalThreatAlert.score, externalThreatAlert.reason);
+    }
+  }, [externalThreatAlert, triggerAIThreatAlert]);
+
+  // Initialize camera stream (real sources only)
+  useEffect(() => {
+    let isCancelled = false;
+    setIsLoadingStream(true);
+    setStreamError(null);
+    setRtspStatus(null);
+
+    if (activeStreamRef.current) {
+      activeStreamRef.current.getTracks().forEach((t) => t.stop());
+      activeStreamRef.current = null;
+      setActiveStream(null);
+    }
+
+    const setupStream = async () => {
+      try {
+        if (camera.type === 'webcam') {
+          const constraints: MediaStreamConstraints = {
+            video: camera.deviceId
+              ? { deviceId: { exact: camera.deviceId }, width: { ideal: 1280 }, height: { ideal: 720 } }
+              : { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' },
+            audio: camera.enableAudio,
+          };
+
+          const stream = await navigator.mediaDevices.getUserMedia(constraints);
+          if (isCancelled) {
+            stream.getTracks().forEach((t) => t.stop());
+            return;
+          }
+
+          activeStreamRef.current = stream;
+          setActiveStream(stream);
+          if (videoRef.current) {
+            videoRef.current.srcObject = stream;
+            videoRef.current.play().catch(() => {});
+          }
+          setIsLoadingStream(false);
+        } else if (isBrowserPlayableUrl(camera.streamUrl)) {
+          if (videoRef.current && camera.streamUrl) {
+            videoRef.current.srcObject = null;
+            videoRef.current.src = camera.streamUrl;
+            videoRef.current.play().catch((err) => {
+              if (!isCancelled) {
+                setStreamError(`Erro ao conectar stream IP: ${err.message || 'Falha de rede'}`);
+              }
+            });
+          }
+          setIsLoadingStream(false);
+        } else if (camera.type === 'commercial_ip' || camera.ipHost) {
+          // Raw RTSP URLs cannot render natively in HTML5 <video> without WebRTC/HLS relay
+          setIsLoadingStream(false);
+          if (camera.ipHost) {
+            checkRtspReachability();
+          }
+        } else {
+          setStreamError('URL de transmissão não configurada');
+          setIsLoadingStream(false);
+        }
+      } catch (err: unknown) {
+        const error = err as Error;
+        if (!isCancelled) {
+          setStreamError(
+            error.name === 'NotAllowedError'
+              ? 'Permissão de câmera negada no navegador. Permita o acesso para visualizar.'
+              : `Não foi possível iniciar câmera: ${error.message}`
+          );
+          setIsLoadingStream(false);
+        }
+      }
+    };
+
+    setupStream();
+
+    return () => {
+      isCancelled = true;
+      if (activeStreamRef.current) {
+        activeStreamRef.current.getTracks().forEach((track) => track.stop());
+        activeStreamRef.current = null;
+      }
+    };
+  }, [camera.type, camera.deviceId, camera.streamUrl, camera.enableAudio, camera.ipHost, checkRtspReachability]);
+
+  // Motion Detection Analyzer loop
+  useEffect(() => {
+    if (!camera.motionDetectionEnabled) {
+      setMotionScore(0);
+      setIsMotionTriggered(false);
+      return;
+    }
+
+    if (!motionDetectorRef.current) {
+      motionDetectorRef.current = new MotionDetector();
+    }
+
+    const checkMotion = () => {
+      if (!videoRef.current || videoRef.current.readyState < 2) return;
+
+      const result = motionDetectorRef.current?.analyze(
+        videoRef.current,
+        camera.motionSensitivity
+      );
+
+      if (result) {
+        setMotionScore(result.score);
+        setIsMotionTriggered(result.isMotion);
+
+        if (result.isMotion) {
+          const now = Date.now();
+          if (now - lastAlarmTimeRef.current > 4000) {
+            lastAlarmTimeRef.current = now;
+            if (soundEnabled && isCameraSoundEnabled) {
+              playMotionAlarm();
+            }
+
+            const motionEvent: MotionEvent = {
+              id: `evt-${Date.now()}`,
+              tenantId: camera.tenantId || DEFAULT_UNIT_ID,
+              cameraId: camera.id,
+              cameraName: camera.name,
+              timestamp: now,
+              intensity: result.score,
+            };
+            saveEventToDB(motionEvent);
+            onMotionEventLogged(motionEvent);
+          }
+
+          if (isRecording && recordingStartTimeRef.current > 0 && now - lastMarkerTimeRef.current > 1500) {
+            lastMarkerTimeRef.current = now;
+            const offsetSeconds = Math.max(0, Number(((now - recordingStartTimeRef.current) / 1000).toFixed(1)));
+            recordingMotionMarkersRef.current.push({
+              id: `mk-${now}`,
+              offsetSeconds,
+              timestamp: now,
+              intensity: result.score,
+              label: result.score >= 75 ? 'Movimento Intenso' : 'Movimento Detectado',
+              isCritical: activeAIThreatRef.current?.level === 'alto',
+            });
+          }
+
+          if (camera.autoRecordOnMotion && !isRecording && !scheduleStatus.isScheduledPause) {
+            startRecording('motion');
+          }
+        }
+      }
+    };
+
+    const intervalId = window.setInterval(checkMotion, 180);
+
+    return () => {
+      clearInterval(intervalId);
+    };
+  }, [
+    camera.motionDetectionEnabled,
+    camera.motionSensitivity,
+    camera.autoRecordOnMotion,
+    scheduleStatus.isScheduledPause,
+    isRecording,
+    soundEnabled,
+    isCameraSoundEnabled,
+    camera.tenantId,
+    camera.id,
+    camera.name,
+    onMotionEventLogged,
+    startRecording,
+  ]);
+
+  // Automatically pause active recording if scheduled pause window begins
+  useEffect(() => {
+    if (scheduleStatus.isScheduledPause && isRecording && recordTrigger === 'motion') {
+      stopRecording();
+    }
+  }, [scheduleStatus.isScheduledPause, isRecording, recordTrigger, stopRecording]);
+
   const handleTakeSnapshot = () => {
     const dataUrl = captureFrameSnapshot();
     if (!dataUrl) return;
@@ -559,24 +666,17 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({
     document.body.removeChild(link);
   };
 
-  // Test motion trigger for simulated feeds
-  const handleSimulateMotion = () => {
-    if (simulatorRef.current) {
-      simulatorRef.current.triggerMotion(4500);
-    }
-  };
-
-  // Format record duration mm:ss
   const formatSeconds = (sec: number) => {
     const m = Math.floor(sec / 60);
     const s = sec % 60;
     return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
   };
 
-  // PTZ Transform
   const ptzTransform = `scale(${camera.digitalZoom || 1}) translate(${camera.pan || 0}px, ${-(camera.tilt || 0)}px)`;
-
   const isThreatAlarmActive = !!activeAIThreat && activeAIThreat.level === 'alto';
+  const isRawRtspOnly =
+    camera.type === 'commercial_ip' && !isBrowserPlayableUrl(camera.streamUrl);
+  const canCaptureVideo = !streamError && !isRawRtspOnly && !isLoadingStream;
 
   return (
     <div
@@ -593,11 +693,50 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({
     >
       {/* Viewport Frame */}
       <div className="relative aspect-video w-full bg-black overflow-hidden flex items-center justify-center">
-        {/* Loading state */}
         {isLoadingStream && (
           <div className="absolute inset-0 flex flex-col items-center justify-center text-neutral-400 gap-2 z-10 bg-neutral-950">
             <div className="w-6 h-6 border-2 border-neutral-600 border-t-blue-500 rounded-full animate-spin" />
             <span className="text-xs">Conectando câmera...</span>
+          </div>
+        )}
+
+        {/* Honest RTSP Endpoint Panel when stream requires HTTP/HLS/WebRTC relay */}
+        {isRawRtspOnly && !streamError && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center text-center p-5 bg-neutral-950 z-10 space-y-2.5">
+            <div
+              className={`p-2.5 rounded-xl border ${
+                rtspStatus?.reachable
+                  ? 'bg-emerald-950/60 border-emerald-800 text-emerald-400'
+                  : 'bg-neutral-900 border-neutral-800 text-neutral-400'
+              }`}
+            >
+              <Wifi className="w-6 h-6" />
+            </div>
+            <div className="space-y-1 max-w-sm">
+              <p className="text-xs font-semibold text-neutral-100">
+                Câmera RTSP ({camera.ipHost}:{camera.ipPort || 554})
+              </p>
+              <p className="text-[11px] text-neutral-400 leading-relaxed">
+                {isCheckingRtsp
+                  ? 'Verificando conectividade TCP/RTSP com o dispositivo...'
+                  : rtspStatus?.checked
+                  ? rtspStatus.reachable
+                    ? `Dispositivo acessível na rede (${rtspStatus.latencyMs ?? '-'}ms). Navegadores não reproduzem RTSP nativo diretamente — informe uma URL HTTP/HLS/MJPEG no gerenciador de câmeras caso utilize gateway de mídia.`
+                    : rtspStatus.message
+                  : 'Stream RTSP nativo requer gateway HTTP/HLS/WebRTC para exibição no navegador.'}
+              </p>
+            </div>
+            {currentUserRole === 'admin' && camera.ipHost && (
+              <button
+                type="button"
+                onClick={checkRtspReachability}
+                disabled={isCheckingRtsp}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-neutral-900 hover:bg-neutral-800 border border-neutral-700 text-[11px] text-neutral-200 transition-colors disabled:opacity-50"
+              >
+                <RefreshCw className={`w-3 h-3 ${isCheckingRtsp ? 'animate-spin' : ''}`} />
+                <span>{isCheckingRtsp ? 'Testando...' : 'Testar Conexão TCP/RTSP'}</span>
+              </button>
+            )}
           </div>
         )}
 
@@ -615,6 +754,7 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({
                   navigator.mediaDevices
                     .getUserMedia({ video: true, audio: camera.enableAudio })
                     .then((s) => {
+                      activeStreamRef.current = s;
                       setActiveStream(s);
                       if (videoRef.current) videoRef.current.srcObject = s;
                       setIsLoadingStream(false);
@@ -648,29 +788,24 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({
 
         {/* Security OSD: Top Bar */}
         <div className="absolute top-0 inset-x-0 p-2.5 flex items-center justify-between bg-gradient-to-b from-black/80 via-black/40 to-transparent pointer-events-none z-20">
-          <div className="flex items-center gap-2">
-            <span className="font-semibold text-xs text-neutral-100 tracking-wide drop-shadow-md">
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="font-semibold text-xs text-neutral-100 tracking-wide drop-shadow-md truncate">
               {camera.name}
             </span>
-            {camera.brand && (
-              <span className="text-[10px] uppercase font-mono px-1.5 py-0.2 rounded bg-blue-950/80 border border-blue-700/60 text-blue-300">
-                {camera.brand}
-              </span>
-            )}
             <span className="text-[11px] text-neutral-400">·</span>
-            <span className="text-[11px] text-neutral-400 drop-shadow-md">
+            <span className="text-[11px] text-neutral-400 drop-shadow-md truncate">
               {camera.location}
             </span>
           </div>
 
-          <div className="flex items-center gap-2 font-mono tabular-nums text-xs text-neutral-200 drop-shadow-md">
+          <div className="flex items-center gap-2 font-mono tabular-nums text-xs text-neutral-200 drop-shadow-md shrink-0">
             <span>{clockString}</span>
           </div>
         </div>
 
-        {/* High Threat Emergency Banner (When AI identifies threat) */}
+        {/* High Threat Emergency Banner */}
         {isThreatAlarmActive && (
-          <div className="absolute top-10 inset-x-3 z-30 p-2.5 rounded-xl bg-red-950/95 border border-red-600 shadow-2xl flex items-center justify-between gap-2 backdrop-blur-md animate-pulse">
+          <div className="absolute top-10 inset-x-3 z-30 p-2.5 rounded-xl bg-red-950/95 border border-red-600 shadow-2xl flex items-center justify-between gap-2 backdrop-blur-md">
             <div className="flex items-center gap-2">
               <ShieldAlert className="w-5 h-5 text-red-400 shrink-0" />
               <div>
@@ -701,12 +836,20 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({
         {/* Security OSD: Bottom Bar & Indicators */}
         <div className="absolute bottom-0 inset-x-0 p-2.5 flex items-center justify-between bg-gradient-to-t from-black/85 via-black/40 to-transparent pointer-events-none z-20">
           <div className="flex items-center gap-2.5">
-            {/* Recording Indicator */}
             {isRecording ? (
-              <div className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-red-600/90 text-white text-[11px] font-mono tabular-nums font-semibold tracking-wider animate-pulse">
+              <div className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-red-600/90 text-white text-[11px] font-mono tabular-nums font-semibold tracking-wider">
                 <Circle className="w-2 h-2 fill-current" />
                 <span>REC {formatSeconds(recordDuration)}</span>
                 <span className="text-[9px] uppercase opacity-80">({recordTrigger})</span>
+              </div>
+            ) : scheduleStatus.isScheduledPause ? (
+              <div className="flex items-center gap-1 text-[11px] font-mono text-amber-400 drop-shadow-md">
+                <PauseCircle className="w-3 h-3" />
+                <span>GRAVAÇÃO PAUSADA (AGENDA)</span>
+              </div>
+            ) : isRawRtspOnly ? (
+              <div className="flex items-center gap-1 text-[11px] font-mono text-neutral-300 drop-shadow-md">
+                <span>{rtspStatus?.reachable ? 'RTSP ONLINE' : 'RTSP AGUARDANDO RELAY'}</span>
               </div>
             ) : (
               <div className="flex items-center gap-1 text-[11px] font-mono text-emerald-400 drop-shadow-md">
@@ -715,7 +858,13 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({
               </div>
             )}
 
-            {/* Individual Camera Sound Status Badge */}
+            {camera.recordingSchedule?.enabled && !scheduleStatus.isScheduledPause && (
+              <div className="flex items-center gap-1 text-[10px] font-mono text-cyan-300 drop-shadow-md">
+                <CalendarClock className="w-3 h-3 text-cyan-400" />
+                <span className="hidden sm:inline">AGENDADA</span>
+              </div>
+            )}
+
             <div className="flex items-center gap-1 text-[10px] font-mono drop-shadow-md">
               {isCameraSoundEnabled ? (
                 <span className="text-blue-300 flex items-center gap-1">
@@ -730,7 +879,6 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({
               )}
             </div>
 
-            {/* Night vision badge */}
             {camera.nightVision && (
               <div className="flex items-center gap-1 text-[10px] font-mono text-emerald-300 drop-shadow-md">
                 <Moon className="w-3 h-3" />
@@ -739,8 +887,7 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({
             )}
           </div>
 
-          {/* Motion Activity Indicator */}
-          {camera.motionDetectionEnabled && (
+          {camera.motionDetectionEnabled && canCaptureVideo && (
             <div className="flex items-center gap-1.5">
               <span className="text-[10px] text-neutral-400 font-mono">SENSOR</span>
               <div className="w-16 h-1.5 bg-neutral-800/80 rounded-full overflow-hidden border border-neutral-700">
@@ -756,9 +903,7 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({
                 />
               </div>
               {isMotionTriggered && (
-                <span className="text-[10px] text-amber-400 font-bold animate-pulse">
-                  MOVIMENTO!
-                </span>
+                <span className="text-[10px] text-amber-400 font-bold">MOVIMENTO</span>
               )}
             </div>
           )}
@@ -780,12 +925,11 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({
 
       {/* Control Action Toolbar */}
       <div className="p-2.5 bg-neutral-900 border-t border-neutral-800 flex items-center justify-between gap-2 text-xs">
-        {/* Left Actions: Record, Snapshot, Individual Sound Toggle, and AI Audit */}
         <div className="flex items-center gap-2">
           {isRecording ? (
             <button
               onClick={stopRecording}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-500 text-white font-medium transition-colors"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-500 text-white font-medium transition-colors whitespace-nowrap shrink-0"
               title="Interromper gravação e salvar"
             >
               <Circle className="w-3.5 h-3.5 fill-current" />
@@ -794,8 +938,9 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({
           ) : (
             <button
               onClick={() => startRecording('manual')}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-200 hover:text-white font-medium transition-colors border border-neutral-700"
-              title="Gravar vídeo desta câmera no site"
+              disabled={!canCaptureVideo}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-neutral-800 hover:bg-neutral-700 disabled:opacity-40 disabled:cursor-not-allowed text-neutral-200 hover:text-white font-medium transition-colors border border-neutral-700 whitespace-nowrap shrink-0"
+              title="Gravar vídeo desta câmera"
             >
               <Circle className="w-3 h-3 text-red-500 fill-red-500" />
               <span>Gravar</span>
@@ -804,24 +949,24 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({
 
           <button
             onClick={handleTakeSnapshot}
-            className="p-1.5 rounded-lg bg-neutral-800/80 hover:bg-neutral-700 text-neutral-300 hover:text-white transition-colors border border-neutral-700/60"
-            title="Capturar foto instantânea (Snapshot)"
+            disabled={!canCaptureVideo}
+            className="p-1.5 rounded-lg bg-neutral-800/80 hover:bg-neutral-700 disabled:opacity-40 disabled:cursor-not-allowed text-neutral-300 hover:text-white transition-colors border border-neutral-700/60"
+            title="Capturar foto instantânea"
           >
             <Camera className="w-3.5 h-3.5" />
           </button>
 
-          {/* Individual Camera Sound Alert Toggle Button */}
           <button
             onClick={toggleCameraSound}
-            className={`flex items-center gap-1 px-2 py-1.5 rounded-lg transition-colors border ${
+            className={`flex items-center gap-1 px-2 py-1.5 rounded-lg transition-colors border whitespace-nowrap shrink-0 ${
               isCameraSoundEnabled
                 ? 'bg-blue-950/80 text-blue-300 border-blue-700 hover:bg-blue-900'
                 : 'bg-neutral-800/80 text-neutral-400 border-neutral-700/60 hover:text-neutral-200'
             }`}
             title={
               isCameraSoundEnabled
-                ? 'Alarme sonoro desta câmera: ATIVADO (Emitirá sirene se a IA detectar Ameaça Alta)'
-                : 'Alarme sonoro desta câmera: SILENCIADO (Não emitirá som nesta câmera)'
+                ? 'Alarme sonoro desta câmera: ATIVADO'
+                : 'Alarme sonoro desta câmera: SILENCIADO'
             }
           >
             {isCameraSoundEnabled ? (
@@ -837,15 +982,15 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({
             )}
           </button>
 
-          {/* AI Audit Action */}
           {onAnalyzeAI && (
             <button
               onClick={() => {
                 const frame = captureFrameSnapshot();
                 if (frame) onAnalyzeAI(camera, frame);
               }}
-              className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-purple-950/80 hover:bg-purple-900 text-purple-300 font-medium transition-colors border border-purple-800/80 shadow"
-              title="Auditar segurança deste frame com IA (Gemini)"
+              disabled={!canCaptureVideo}
+              className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-purple-950/80 hover:bg-purple-900 disabled:opacity-40 disabled:cursor-not-allowed text-purple-300 font-medium transition-colors border border-purple-800/80 shadow whitespace-nowrap shrink-0"
+              title="Auditar segurança deste frame com IA"
             >
               <Sparkles className="w-3.5 h-3.5 text-purple-400" />
               <span className="hidden sm:inline">Auditoria IA</span>
@@ -853,33 +998,7 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({
           )}
         </div>
 
-        {/* Right Actions: Test Threat Alert, Night Vision, PTZ, Focus */}
         <div className="flex items-center gap-1.5">
-          {/* Test High Threat Alert Button - Admin only */}
-          {currentUserRole === 'admin' && (
-            <button
-              onClick={() => triggerAIThreatAlert(92, 'Teste de invasão suspeita no caixa')}
-              className="flex items-center gap-1 px-2 py-1 rounded bg-neutral-800/80 hover:bg-red-950/60 hover:text-red-300 text-neutral-400 text-[11px] border border-neutral-700/60 transition-colors"
-              title="Testar sirene de Ameaça Alta da IA nesta câmera (Administrador)"
-            >
-              <ShieldAlert className="w-3 h-3 text-red-400" />
-              <span className="hidden sm:inline">Testar Ameaça IA</span>
-            </button>
-          )}
-
-          {/* Simulated motion button for simulated feeds */}
-          {camera.type === 'simulated' && (
-            <button
-              onClick={handleSimulateMotion}
-              className="flex items-center gap-1 px-2 py-1 rounded bg-neutral-800/80 hover:bg-neutral-700 text-amber-300 text-[11px] border border-neutral-700/60"
-              title="Testar sensor: Simular pessoa/carro passando na câmera"
-            >
-              <Activity className="w-3 h-3 text-amber-400" />
-              <span className="hidden sm:inline">Movimento</span>
-            </button>
-          )}
-
-          {/* Night Vision Toggle */}
           <button
             onClick={() => onUpdateCamera({ ...camera, nightVision: !camera.nightVision })}
             className={`p-1.5 rounded-lg transition-colors border ${
@@ -892,7 +1011,6 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({
             {camera.nightVision ? <Sun className="w-3.5 h-3.5" /> : <Moon className="w-3.5 h-3.5" />}
           </button>
 
-          {/* PTZ Zoom/Pan Toggle */}
           <button
             onClick={() => setShowPTZ(!showPTZ)}
             className={`p-1.5 rounded-lg transition-colors border ${
@@ -905,7 +1023,6 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({
             <Sliders className="w-3.5 h-3.5" />
           </button>
 
-          {/* Focus / Maximize */}
           {onToggleFocus && (
             <button
               onClick={onToggleFocus}

@@ -1,34 +1,47 @@
 import { CameraBrand } from '../utils/commercialCameras';
 
-export type CameraSourceType = 'webcam' | 'ip_stream' | 'commercial_ip' | 'simulated';
-
-export type SimulationPreset = 'entrance' | 'parking' | 'hallway' | 'perimeter';
+export type CameraSourceType = 'webcam' | 'ip_stream' | 'commercial_ip';
 
 export type CloudStorageDestination = 'local' | 'google_drive';
 
 export type UserRole = 'admin' | 'operador';
 
-export interface UserProfile {
+export interface AuthUser {
   id: string;
   name: string;
+  username: string;
   email: string;
   role: UserRole;
-  assignedBusinessId?: string;
+  active: boolean;
+  createdAt: number;
+  lastLoginAt?: number;
 }
 
 export interface ClientBusiness {
   id: string;
   name: string;
   ownerEmail: string;
-  businessType: 'retail' | 'food' | 'pharmacy' | 'warehouse' | 'office' | 'general';
+  businessType: 'residence' | 'office' | 'warehouse' | 'facility' | 'retail' | 'general';
   address: string;
   driveFolderId?: string;
   dateCreated: number;
 }
 
+export type DayOfWeek = 0 | 1 | 2 | 3 | 4 | 5 | 6;
+
+export interface RecordingSchedule {
+  enabled: boolean;
+  mode: 'allow_window' | 'pause_window';
+  days: DayOfWeek[];
+  startTime: string; // "HH:mm"
+  endTime: string;   // "HH:mm"
+}
+
+export type DetectedObjectTag = 'person' | 'vehicle' | 'pet' | 'package';
+
 export interface CameraConfig {
   id: string;
-  tenantId: string; // Business/Customer Isolation ID
+  tenantId: string; // Unit / Location Isolation ID
   name: string;
   location: string;
   type: CameraSourceType;
@@ -38,28 +51,37 @@ export interface CameraConfig {
   ipUser?: string;
   ipPass?: string;
   ipChannel?: number;
-  deviceId?: string; // For real webcam
-  streamUrl?: string; // For HLS / MJPEG / MP4 stream
-  simulationPreset?: SimulationPreset;
+  deviceId?: string; // For local hardware webcam
+  streamUrl?: string; // For HLS / MJPEG / MP4 / RTSP stream
   resolution?: '1080p' | '720p' | '480p';
   fps?: number;
   enableAudio: boolean;
-  soundAlarmEnabled?: boolean; // Configurable per-camera sound alert
-  aiThreatAlertEnabled?: boolean; // Activate alarm on high AI threat
+  soundAlarmEnabled?: boolean;
+  aiThreatAlertEnabled?: boolean;
   nightVision: boolean;
   motionDetectionEnabled: boolean;
   motionSensitivity: number; // 1 to 100
   autoRecordOnMotion: boolean;
   autoRecordDuration: number; // seconds
+  recordingSchedule?: RecordingSchedule;
   digitalZoom: number; // 1.0 to 3.0
   pan: number; // -50 to 50
   tilt: number; // -50 to 50
   dateAdded: number;
 }
 
+export interface RecordingMotionMarker {
+  id: string;
+  offsetSeconds: number;
+  timestamp: number;
+  intensity: number; // 0 to 100
+  label?: string;
+  isCritical?: boolean;
+}
+
 export interface RecordingItem {
   id: string;
-  tenantId: string; // Business/Customer Isolation ID
+  tenantId: string;
   cameraId: string;
   cameraName: string;
   cameraLocation: string;
@@ -79,11 +101,14 @@ export interface RecordingItem {
   aiThreatLevel?: 'baixo' | 'medio' | 'alto';
   aiThreatScore?: number;
   aiThreatReason?: string;
+  detectedObjects?: DetectedObjectTag[];
+  detectedElements?: string[];
+  motionMarkers?: RecordingMotionMarker[];
 }
 
 export interface MotionEvent {
   id: string;
-  tenantId: string; // Business/Customer Isolation ID
+  tenantId: string;
   cameraId: string;
   cameraName: string;
   timestamp: number;
@@ -97,6 +122,7 @@ export interface AISecurityAnalysis {
   threatScore: number;
   summary: string;
   detectedElements: string[];
+  detectedObjects?: DetectedObjectTag[];
   securityConcerns: string[];
   recommendations: string[];
   occupancyEstimate: number;
@@ -129,11 +155,13 @@ export interface DiscoveredDevice {
   defaultPass: string;
   locationSuggestion: string;
   rtspTemplate: string;
-  simulationPreset?: SimulationPreset;
   deviceId?: string; // For physical hardware webcams
   isLocalHardware?: boolean;
   status: 'online' | 'needs_auth' | 'connected';
   latencyMs?: number;
+  rtspVerified?: boolean;
+  serverBanner?: string;
+  openPorts?: number[];
 }
 
 export interface CameraStreamTelemetry {
@@ -167,4 +195,3 @@ export interface SystemBottleneckAlert {
   recommendation: string;
   timestamp: number;
 }
-

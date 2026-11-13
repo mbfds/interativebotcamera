@@ -2,25 +2,17 @@ import React, { useState, useEffect, useCallback } from 'react';
 import {
   Shield,
   Video,
-  Grid2X2,
-  Maximize,
   HardDrive,
-  Plus,
-  Bell,
   CheckCircle2,
-  Film,
-  Camera,
-  Layers,
   Sparkles,
   Cloud,
   Building2,
   Wifi,
   Activity,
-  Lock,
-  Unlock,
-  KeyRound,
   ShieldCheck,
-  ShieldAlert,
+  Users,
+  LogOut,
+  Plus,
 } from 'lucide-react';
 import { User } from 'firebase/auth';
 import {
@@ -32,16 +24,18 @@ import {
   ClientBusiness,
   AISecurityAnalysis,
   AIDailyReport,
+  DetectedObjectTag,
   UserRole,
+  AuthUser,
 } from './types/camera';
 import {
+  purgeAllLegacyDemoData,
   getStoredBusinesses,
   saveBusinessToDB,
   deleteBusinessFromDB,
   getStoredCameras,
   saveCameraToDB,
   deleteCameraFromDB,
-  purgeDemonstrativeCameras,
   getStoredRecordings,
   saveRecordingToDB,
   deleteRecordingFromDB,
@@ -49,7 +43,7 @@ import {
   getStoredEvents,
   clearAllEventsFromDB,
   getStorageStats,
-  DEFAULT_BUSINESS_ID,
+  DEFAULT_UNIT_ID,
 } from './services/db';
 import {
   initAuth,
@@ -57,6 +51,13 @@ import {
   uploadRecordingToDrive,
   deleteRecordingFromDrive,
 } from './services/googleDrive';
+import {
+  fetchAuthStatus,
+  logoutSession,
+  getAuthHeaders,
+  setAuthToken,
+} from './services/auth';
+import { LoginScreen } from './components/LoginScreen';
 import { Navbar } from './components/Navbar';
 import { CameraFeed } from './components/CameraFeed';
 import { AddCameraModal } from './components/AddCameraModal';
@@ -69,12 +70,18 @@ import { AISecurityInspectorModal } from './components/AISecurityInspectorModal'
 import { SystemDiagnosticsPanel } from './components/SystemDiagnosticsPanel';
 import { UserRoleModal } from './components/UserRoleModal';
 import { sendHighThreatBrowserNotification } from './utils/browserNotifications';
+import { extractDetectedObjectTags } from './utils/detectedObjects';
 
 export default function App() {
+  // Authentication gate state
+  const [authLoading, setAuthLoading] = useState<boolean>(true);
+  const [needsSetup, setNeedsSetup] = useState<boolean>(false);
+  const [authUser, setAuthUser] = useState<AuthUser | null>(null);
+
   const [currentTab, setCurrentTab] = useState<'monitor' | 'recordings'>('monitor');
   const [businesses, setBusinesses] = useState<ClientBusiness[]>([]);
   const [activeBusinessId, setActiveBusinessId] = useState<string>(() => {
-    return localStorage.getItem('nvr_active_biz') || DEFAULT_BUSINESS_ID;
+    return localStorage.getItem('nvr_active_biz') || DEFAULT_UNIT_ID;
   });
 
   const [cameras, setCameras] = useState<CameraConfig[]>([]);
@@ -115,6 +122,16 @@ export default function App() {
       }
     >
   >({});
+  const [cameraLatestAiTags, setCameraLatestAiTags] = useState<
+    Record<
+      string,
+      {
+        detectedObjects: DetectedObjectTag[];
+        detectedElements: string[];
+        summary?: string;
+      }
+    >
+  >({});
 
   // Modals & Drawers
   const [isAddModalOpen, setIsAddModalOpen] = useState<boolean>(false);
@@ -126,37 +143,89 @@ export default function App() {
   const [isDiagnosticsOpen, setIsDiagnosticsOpen] = useState<boolean>(false);
   const [isRoleModalOpen, setIsRoleModalOpen] = useState<boolean>(false);
 
-  // User and Admin Role Separation
-  const [currentUserRole, setCurrentUserRole] = useState<UserRole>(() => {
-    return (localStorage.getItem('sentinela_user_role') as UserRole) || 'admin';
-  });
-
-  const handleRoleChange = (role: UserRole) => {
-    setCurrentUserRole(role);
-    localStorage.setItem('sentinela_user_role', role);
-    setToastMessage({
-      title: `Perfil Alternado: ${role === 'admin' ? 'Administrador' : 'Operador'}`,
-      subtitle: role === 'admin' ? 'Acesso irrestrito liberado.' : 'Modo monitoramento seguro ativado.',
-    });
-  };
-
-  const handlePurgeDemoCameras = async () => {
-    await purgeDemonstrativeCameras();
-    const cleanList = await getStoredCameras(activeBusinessId);
-    setCameras(cleanList);
-    setToastMessage({
-      title: 'Câmeras Demonstrativas Removidas',
-      subtitle: 'Agora apenas dispositivos reais conectados constam no sistema.',
-    });
-  };
-
   // Storage Stats & Toast
   const [storageUsageBytes, setStorageUsageBytes] = useState<number>(0);
   const [toastMessage, setToastMessage] = useState<{ title: string; subtitle?: string } | null>(null);
 
+  // Clean up any legacy role cache key from pre-auth builds
+  useEffect(() => {
+    localStorage.removeItem('sentinela_user_role');
+  }, []);
+
+  // Check session authentication on boot
+  useEffect(() => {
+    let active = true;
+    const bootstrapAuth = async () => {
+      try {
+        await purgeAllLegacyDemoData();
+        const status = await fetchAuthStatus();
+        if (!active) return;
+        setNeedsSetup(status.needsSetup);
+        setAuthUser(status.user);
+      } catch (err) {
+        console.error('Auth bootstrap error:', err);
+      } finally {
+        if (active) setAuthLoading(false);
+      }
+    };
+    bootstrapAuth();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const handleAuthenticated = async (loggedUser: AuthUser, initialUnitName?: string) => {
+    setAuthUser(loggedUser);
+    setNeedsSetup(false);
+    await purgeAllLegacyDemoData();
+
+    const existingUnits = await getStoredBusinesses();
+    if (existingUnits.length === 0 && initialUnitName?.trim()) {
+      const unit: ClientBusiness = {
+        id: DEFAULT_UNIT_ID,
+        name: initialUnitName.trim(),
+        ownerEmail: loggedUser.email || '',
+        businessType: 'general',
+        address: '',
+        dateCreated: Date.now(),
+      };
+      await saveBusinessToDB(unit);
+      setBusinesses([unit]);
+      setActiveBusinessId(unit.id);
+      localStorage.setItem('nvr_active_biz', unit.id);
+    } else if (existingUnits.length > 0) {
+      setBusinesses(existingUnits);
+      const validActive = existingUnits.some((u) => u.id === activeBusinessId)
+        ? activeBusinessId
+        : existingUnits[0].id;
+      setActiveBusinessId(validActive);
+      localStorage.setItem('nvr_active_biz', validActive);
+    }
+
+    setToastMessage({
+      title: `Bem-vindo, ${loggedUser.name}`,
+      subtitle:
+        loggedUser.role === 'admin'
+          ? 'Sessão autenticada com perfil Administrador.'
+          : 'Sessão autenticada com perfil Operador.',
+    });
+  };
+
+  const handleLogout = async () => {
+    await logoutSession();
+    setAuthToken(null);
+    setAuthUser(null);
+    setIsRoleModalOpen(false);
+    setIsAddModalOpen(false);
+    setIsManagerModalOpen(false);
+    setIsBusinessModalOpen(false);
+    setIsCloudModalOpen(false);
+    setIsAiInspectorOpen(false);
+  };
+
+  const currentUserRole: UserRole = authUser?.role || 'operador';
   const activeBusiness = businesses.find((b) => b.id === activeBusinessId) || businesses[0] || null;
 
-  // Save cloud preferences
   const handleChangeCloudDestination = (dest: CloudStorageDestination) => {
     setCloudDestination(dest);
     localStorage.setItem('nvr_cloud_dest', dest);
@@ -181,23 +250,12 @@ export default function App() {
     }
   }, [toastMessage]);
 
-  // Initialize Firebase Auth listener
+  // Initialize Firebase Google Drive OAuth listener
   useEffect(() => {
     const unsubscribe = initAuth(
       (currentUser, token) => {
         setUser(currentUser);
         setAccessToken(token);
-
-        // If user email matches any client business, select that business
-        if (currentUser?.email) {
-          getStoredBusinesses().then((bizList) => {
-            const matched = bizList.find((b) => b.ownerEmail.toLowerCase() === currentUser.email?.toLowerCase());
-            if (matched) {
-              setActiveBusinessId(matched.id);
-              localStorage.setItem('nvr_active_biz', matched.id);
-            }
-          });
-        }
       },
       () => {
         setUser(null);
@@ -209,7 +267,7 @@ export default function App() {
     };
   }, []);
 
-  // Load Data for Active Business
+  // Load Data for Active Unit
   const refreshRecordings = useCallback(async () => {
     try {
       const recs = await getStoredRecordings(activeBusinessId);
@@ -242,10 +300,16 @@ export default function App() {
   }, [activeBusinessId]);
 
   useEffect(() => {
+    if (!authUser) return;
     const initData = async () => {
       try {
-        const storedBusinesses = await getStoredBusinesses();
-        setBusinesses(storedBusinesses);
+        await purgeAllLegacyDemoData();
+        const storedUnits = await getStoredBusinesses();
+        setBusinesses(storedUnits);
+        if (storedUnits.length > 0 && !storedUnits.some((u) => u.id === activeBusinessId)) {
+          setActiveBusinessId(storedUnits[0].id);
+          localStorage.setItem('nvr_active_biz', storedUnits[0].id);
+        }
         await refreshCameras();
         await refreshRecordings();
         await refreshEvents();
@@ -254,21 +318,23 @@ export default function App() {
       }
     };
     initData();
-  }, [activeBusinessId, refreshCameras, refreshRecordings, refreshEvents]);
+  }, [authUser, activeBusinessId, refreshCameras, refreshRecordings, refreshEvents]);
 
-  // Business Handlers
-  const handleAddBusiness = async (biz: ClientBusiness) => {
-    await saveBusinessToDB(biz);
-    setBusinesses((prev) => [...prev, biz]);
-    setActiveBusinessId(biz.id);
-    localStorage.setItem('nvr_active_biz', biz.id);
+  // Unit Handlers (Admin only)
+  const handleAddBusiness = async (unit: ClientBusiness) => {
+    if (currentUserRole !== 'admin') return;
+    await saveBusinessToDB(unit);
+    setBusinesses((prev) => [...prev, unit]);
+    setActiveBusinessId(unit.id);
+    localStorage.setItem('nvr_active_biz', unit.id);
     setToastMessage({
-      title: 'Comércio Cadastrado',
-      subtitle: `${biz.name} agora possui ambiente isolado de CFTV.`,
+      title: 'Unidade Cadastrada',
+      subtitle: `${unit.name} ativada no ambiente de monitoramento.`,
     });
   };
 
   const handleDeleteBusiness = async (id: string) => {
+    if (currentUserRole !== 'admin') return;
     await deleteBusinessFromDB(id);
     const updated = businesses.filter((b) => b.id !== id);
     setBusinesses(updated);
@@ -292,8 +358,11 @@ export default function App() {
         } else {
           return;
         }
-      } catch (err) {
-        alert('Não foi possível autenticar com o Google Drive.');
+      } catch {
+        setToastMessage({
+          title: 'Autenticação Google Drive',
+          subtitle: 'Não foi possível autenticar com o Google Drive.',
+        });
         return;
       }
     }
@@ -312,12 +381,15 @@ export default function App() {
       await saveRecordingToDB(updatedRec);
       await refreshRecordings();
       setToastMessage({
-        title: 'Vídeo Salvo no Google Drive!',
+        title: 'Vídeo Salvo no Google Drive',
         subtitle: `Arquivo salvo na pasta "Sentinela NVR - Gravações".`,
       });
     } catch (err: unknown) {
       const error = err as Error;
-      alert(`Erro ao enviar para Google Drive: ${error.message}`);
+      setToastMessage({
+        title: 'Erro no Upload',
+        subtitle: error.message,
+      });
     } finally {
       setIsUploadingId(null);
     }
@@ -336,7 +408,7 @@ export default function App() {
 
       const response = await fetch('/api/ai/analyze-frame', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           imageBase64: frameBase64,
           cameraName: camera.name,
@@ -347,16 +419,29 @@ export default function App() {
         }),
       });
 
+      if (response.status === 401) {
+        await handleLogout();
+        return;
+      }
+
       if (!response.ok) {
         throw new Error(`Falha na API: ${response.statusText}`);
       }
 
       const data = await response.json();
+      const detectedElements: string[] = data.detectedElements || ['Ambiente monitorado'];
+      const detectedObjects = extractDetectedObjectTags({
+        explicitTags: data.detectedObjects,
+        detectedElements,
+        texts: [data.summary, ...(data.securityConcerns || [])],
+      });
+
       const newAnalysis: AISecurityAnalysis = {
         threatLevel: data.threatLevel || 'baixo',
         threatScore: data.threatScore || 15,
         summary: data.summary || 'Ambiente monitorado sem intercorrências.',
-        detectedElements: data.detectedElements || ['Ambiente comercial'],
+        detectedElements,
+        detectedObjects,
         securityConcerns: data.securityConcerns || [],
         recommendations: data.recommendations || ['Manter rotina padrão'],
         occupancyEstimate: data.occupancyEstimate || 0,
@@ -365,7 +450,15 @@ export default function App() {
       };
       setAiAnalysis(newAnalysis);
 
-      // If Threat Level is 'alto' (or threatScore >= 70), activate the camera threat alert
+      setCameraLatestAiTags((prev) => ({
+        ...prev,
+        [camera.id]: {
+          detectedObjects,
+          detectedElements,
+          summary: newAnalysis.summary,
+        },
+      }));
+
       if (data.threatLevel === 'alto' || (data.threatScore && data.threatScore >= 70)) {
         const topReason =
           data.securityConcerns?.[0] || data.summary || 'Ameaça de segurança alta detectada pela IA';
@@ -380,11 +473,10 @@ export default function App() {
         }));
 
         setToastMessage({
-          title: `🚨 Alerta IA: Ameaça Alta em ${camera.name}!`,
+          title: `Alerta IA: Ameaça Alta em ${camera.name}`,
           subtitle: `Nível crítico (${data.threatScore || 85}/100): ${topReason}`,
         });
 
-        // Dispatch Browser Web Notification to alert user even if tab is in background/minimized
         sendHighThreatBrowserNotification({
           cameraName: camera.name,
           threatScore: data.threatScore || 85,
@@ -399,7 +491,7 @@ export default function App() {
       setAiAnalysis({
         threatLevel: 'baixo',
         threatScore: 10,
-        summary: 'Análise de segurança padrão concluída. ' + error.message,
+        summary: 'Análise padrão concluída. ' + error.message,
         detectedElements: ['Câmera em operação normal'],
         securityConcerns: [],
         recommendations: ['Monitorar movimentação periódica'],
@@ -418,7 +510,7 @@ export default function App() {
     try {
       const response = await fetch('/api/ai/daily-report', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           businessName: activeBusiness?.name,
           events: motionEvents,
@@ -426,6 +518,11 @@ export default function App() {
           cameraCount: cameras.length,
         }),
       });
+
+      if (response.status === 401) {
+        await handleLogout();
+        return;
+      }
 
       if (!response.ok) {
         throw new Error('Falha ao gerar relatório');
@@ -440,35 +537,50 @@ export default function App() {
     }
   };
 
-  // Add Camera Handler
+  // Camera CRUD
   const handleAddCamera = async (newCam: CameraConfig) => {
-    const camWithTenant = { ...newCam, tenantId: activeBusinessId };
+    if (currentUserRole !== 'admin') return;
+    let targetUnitId = activeBusinessId;
+    if (businesses.length === 0) {
+      const firstUnit: ClientBusiness = {
+        id: DEFAULT_UNIT_ID,
+        name: 'Unidade Principal',
+        ownerEmail: authUser?.email || '',
+        businessType: 'general',
+        address: '',
+        dateCreated: Date.now(),
+      };
+      await saveBusinessToDB(firstUnit);
+      setBusinesses([firstUnit]);
+      targetUnitId = firstUnit.id;
+      setActiveBusinessId(targetUnitId);
+      localStorage.setItem('nvr_active_biz', targetUnitId);
+    }
+
+    const camWithTenant = { ...newCam, tenantId: targetUnitId };
     await saveCameraToDB(camWithTenant);
     setCameras((prev) => [...prev, camWithTenant]);
     setToastMessage({
       title: 'Câmera Adicionada',
-      subtitle: `${newCam.name} conectada ao ${activeBusiness?.name}.`,
+      subtitle: `${newCam.name} conectada à unidade ${activeBusiness?.name || 'Unidade Principal'}.`,
     });
   };
 
-  // Update Camera Handler
   const handleUpdateCamera = async (updatedCam: CameraConfig) => {
     await saveCameraToDB(updatedCam);
     setCameras((prev) => prev.map((c) => (c.id === updatedCam.id ? updatedCam : c)));
   };
 
-  // Delete Camera Handler
   const handleDeleteCamera = async (id: string) => {
+    if (currentUserRole !== 'admin') return;
     await deleteCameraFromDB(id);
     setCameras((prev) => prev.filter((c) => c.id !== id));
     if (focusedCameraId === id) setFocusedCameraId(null);
   };
 
-  // Recording Saved Notification & Auto-upload to Drive if enabled
   const handleRecordingSaved = async () => {
     const updatedRecs = await refreshRecordings();
 
-    // Check if auto-sync to Google Drive is active
     if (cloudDestination === 'google_drive' && autoSyncToCloud && accessToken && updatedRecs.length > 0) {
       const latestRec = updatedRecs[0];
       if (latestRec && !latestRec.driveFileId) {
@@ -485,8 +597,8 @@ export default function App() {
           await refreshRecordings();
 
           setToastMessage({
-            title: 'Gravação Salva e Enviada!',
-            subtitle: `Sincronizada no Google Drive do ${activeBusiness?.name}.`,
+            title: 'Gravação Salva e Enviada',
+            subtitle: `Sincronizada no Google Drive (${activeBusiness?.name || 'Unidade'}).`,
           });
           return;
         } catch (err) {
@@ -498,13 +610,13 @@ export default function App() {
     }
 
     setToastMessage({
-      title: 'Gravação Salva com Sucesso!',
+      title: 'Gravação Salva',
       subtitle: 'O vídeo foi armazenado no banco de dados local.',
     });
   };
 
-  // Delete Recording Handler (with Drive deletion if exists)
   const handleDeleteRecording = async (id: string) => {
+    if (currentUserRole !== 'admin') return;
     const recToDelete = recordings.find((r) => r.id === id);
     if (recToDelete?.driveFileId && accessToken) {
       try {
@@ -517,28 +629,25 @@ export default function App() {
     await refreshRecordings();
   };
 
-  // Clear All Recordings Handler
   const handleClearAllRecordings = async () => {
+    if (currentUserRole !== 'admin') return;
     await clearAllRecordingsFromDB(activeBusinessId);
     await refreshRecordings();
     setToastMessage({
       title: 'Gravações Limpas',
-      subtitle: `As gravações do comércio foram liberadas.`,
+      subtitle: `As gravações desta unidade foram removidas.`,
     });
   };
 
-  // Motion Event Logged
   const handleMotionEventLogged = (event: MotionEvent) => {
     setMotionEvents((prev) => [event, ...prev.slice(0, 49)]);
   };
 
-  // Clear Events
   const handleClearEvents = async () => {
     await clearAllEventsFromDB(activeBusinessId);
     setMotionEvents([]);
   };
 
-  // Grid layout column classes
   const getGridClasses = () => {
     if (focusedCameraId) return 'grid-cols-1';
     switch (gridView) {
@@ -560,9 +669,23 @@ export default function App() {
     return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
   };
 
+  // Loading gate
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-[#0b0f17] text-neutral-300 flex flex-col items-center justify-center gap-3">
+        <div className="w-7 h-7 border-2 border-neutral-700 border-t-blue-500 rounded-full animate-spin" />
+        <span className="text-xs text-neutral-400">Verificando sessão...</span>
+      </div>
+    );
+  }
+
+  // Mandatory Login / Initial Admin Setup gate
+  if (!authUser) {
+    return <LoginScreen needsSetup={needsSetup} onAuthenticated={handleAuthenticated} />;
+  }
+
   return (
     <div className="min-h-screen bg-[#0b0f17] text-neutral-200 flex flex-col font-sans selection:bg-blue-600 selection:text-white">
-      {/* 3-Zone Top Bar */}
       <Navbar
         currentTab={currentTab}
         onSelectTab={setCurrentTab}
@@ -574,9 +697,8 @@ export default function App() {
           if (currentUserRole !== 'admin') {
             setToastMessage({
               title: 'Acesso Restrito ao Administrador',
-              subtitle: 'Alterne para o perfil de Administrador para pesquisar e adicionar câmeras.',
+              subtitle: 'Apenas administradores podem adicionar novas câmeras.',
             });
-            setIsRoleModalOpen(true);
             return;
           }
           setIsAddModalOpen(true);
@@ -590,15 +712,12 @@ export default function App() {
           setIsDiagnosticsOpen((prev) => !prev);
         }}
         onOpenRoleModal={() => setIsRoleModalOpen(true)}
-        currentRole={currentUserRole}
+        currentUser={authUser}
         onOpenAIModal={() => {
           if (cameras.length > 0) {
-            // Trigger inspection on first camera
             setAiSelectedCamera(cameras[0]);
-            setIsAiInspectorOpen(true);
-          } else {
-            setIsAiInspectorOpen(true);
           }
+          setIsAiInspectorOpen(true);
         }}
         activeBusiness={activeBusiness}
         cloudDestination={cloudDestination}
@@ -638,7 +757,7 @@ export default function App() {
         {/* Tab 1: Live Monitoring */}
         {currentTab === 'monitor' && (
           <div className="space-y-4">
-            {/* Modo Administrador & Operational Security Control Bar */}
+            {/* Authenticated Role & Operational Security Bar */}
             <div
               className={`p-3.5 rounded-2xl border transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-lg ${
                 currentUserRole === 'admin'
@@ -650,7 +769,7 @@ export default function App() {
                 <div
                   className={`p-2 rounded-xl border flex items-center justify-center shrink-0 ${
                     currentUserRole === 'admin'
-                      ? 'bg-amber-900/60 border-amber-600/80 text-amber-300 shadow-md shadow-amber-950/40'
+                      ? 'bg-amber-900/60 border-amber-600/80 text-amber-300'
                       : 'bg-emerald-950 border-emerald-700/80 text-emerald-400'
                   }`}
                 >
@@ -663,12 +782,11 @@ export default function App() {
                 <div>
                   <div className="flex items-center gap-2 flex-wrap">
                     <h4 className="text-xs font-bold text-neutral-100 uppercase tracking-wide">
-                      {currentUserRole === 'admin'
-                        ? 'Modo Administrador Ativo'
-                        : 'Modo Operador · Segurança Operacional'}
+                      {authUser.name} ·{' '}
+                      {currentUserRole === 'admin' ? 'Administrador' : 'Operador'}
                     </h4>
                     <span
-                      className={`text-[10px] font-mono px-2 py-0.5 rounded-full font-bold border ${
+                      className={`text-[10px] font-mono px-2 py-0.5 rounded font-bold border ${
                         currentUserRole === 'admin'
                           ? 'bg-amber-950 text-amber-300 border-amber-700'
                           : 'bg-emerald-950 text-emerald-300 border-emerald-800'
@@ -679,45 +797,40 @@ export default function App() {
                   </div>
                   <p className="text-[11px] text-neutral-400 mt-0.5">
                     {currentUserRole === 'admin'
-                      ? 'Parâmetros de rede, IPs, portas RTSP e exclusão de câmeras habilitadas para gerenciamento.'
-                      : 'Configurações críticas de rede, IPs e exclusão de câmeras estão ocultas para evitar falhas acidentais.'}
+                      ? 'Gerenciamento completo de usuários, configurações de rede RTSP e exclusão de câmeras.'
+                      : 'Modo Operador ativo: parâmetros críticos de rede e exclusão de câmeras/gravações estão protegidos.'}
                   </p>
                 </div>
               </div>
 
               <div className="flex items-center gap-2 self-end sm:self-auto shrink-0">
-                {currentUserRole === 'admin' ? (
-                  <button
-                    onClick={() => handleRoleChange('operador')}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-neutral-900 hover:bg-neutral-850 border border-neutral-700 text-xs text-neutral-300 hover:text-white font-medium transition-colors shadow-sm"
-                    title="Bloquear para o modo operador seguro (oculta configurações críticas e exclusão de câmeras)"
-                  >
-                    <Lock className="w-3.5 h-3.5 text-neutral-400" />
-                    <span>Bloquear para Modo Operador</span>
-                  </button>
-                ) : (
-                  <button
-                    onClick={() => setIsRoleModalOpen(true)}
-                    className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-500 text-white font-semibold text-xs transition-all shadow-md shadow-amber-900/40 hover:scale-[1.02]"
-                    title="Inserir PIN (padrão: 1234) para desbloquear o Modo Administrador"
-                  >
-                    <KeyRound className="w-3.5 h-3.5 text-amber-200" />
-                    <span>Desbloquear Modo Administrador</span>
-                  </button>
-                )}
+                <button
+                  onClick={() => setIsRoleModalOpen(true)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-neutral-900 hover:bg-neutral-800 border border-neutral-700 text-xs text-neutral-200 font-medium transition-colors whitespace-nowrap shrink-0"
+                >
+                  <Users className="w-3.5 h-3.5 text-blue-400" />
+                  <span>{currentUserRole === 'admin' ? 'Conta & Usuários' : 'Minha Conta'}</span>
+                </button>
+                <button
+                  onClick={handleLogout}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-neutral-900 hover:bg-red-950/70 hover:text-red-300 border border-neutral-700 hover:border-red-800 text-xs text-neutral-300 font-medium transition-colors whitespace-nowrap shrink-0"
+                >
+                  <LogOut className="w-3.5 h-3.5" />
+                  <span>Sair</span>
+                </button>
               </div>
             </div>
 
-            {/* Monitor Sub-Header: Store Info, Grid Selector & AI Quick Button */}
+            {/* Monitor Sub-Header: Unit Info, Grid Selector & Quick Tools */}
             <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 pb-2 border-b border-neutral-800/80">
               <div className="flex items-center gap-2.5">
                 <button
                   onClick={() => setIsBusinessModalOpen(true)}
                   className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 text-xs text-neutral-200 transition-colors"
-                  title="Trocar comércio cliente"
+                  title="Selecionar ou gerenciar unidades"
                 >
                   <Building2 className="w-3.5 h-3.5 text-blue-400" />
-                  <span className="font-semibold">{activeBusiness?.name}</span>
+                  <span className="font-semibold">{activeBusiness?.name || 'Sem Unidade Ativa'}</span>
                 </button>
                 <span className="text-neutral-500">·</span>
                 <span className="font-mono tabular-nums text-xs text-neutral-400">
@@ -733,35 +846,31 @@ export default function App() {
                 )}
               </div>
 
-              {/* Grid Layout Switcher, Diagnostics & Cloud Indicator */}
               <div className="flex flex-wrap items-center gap-2">
-                {/* Real-time Diagnostics & Bottleneck Toggle */}
                 <button
                   onClick={() => setIsDiagnosticsOpen((prev) => !prev)}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-medium transition-all shadow-sm ${
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-medium transition-all shadow-sm whitespace-nowrap shrink-0 ${
                     isDiagnosticsOpen
-                      ? 'bg-cyan-600 text-white border-cyan-500 shadow-cyan-900/40 font-semibold'
-                      : 'bg-neutral-900 hover:bg-neutral-850 border-neutral-800 text-cyan-400 hover:text-cyan-300'
+                      ? 'bg-cyan-600 text-white border-cyan-500 font-semibold'
+                      : 'bg-neutral-900 hover:bg-neutral-800 border-neutral-800 text-cyan-400 hover:text-cyan-300'
                   }`}
-                  title="Painel de latência de rede (ms) e CPU/RAM em tempo real de cada câmera para identificar gargalos"
+                  title="Latência de rede (ms) e recursos de cada câmera"
                 >
                   <Activity className={`w-3.5 h-3.5 ${isDiagnosticsOpen ? 'text-white' : 'text-cyan-400'}`} />
-                  <span>Diagnóstico de Rede & CPU/RAM</span>
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                  <span>Diagnóstico de Rede &amp; CPU/RAM</span>
                 </button>
 
-                {/* AI Security Inspection Shortcut */}
                 <button
                   onClick={() => {
                     if (cameras.length > 0) {
                       setAiSelectedCamera(cameras[0]);
                       setIsAiInspectorOpen(true);
-                    } else {
+                    } else if (currentUserRole === 'admin') {
                       setIsAddModalOpen(true);
                     }
                   }}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-purple-950/70 hover:bg-purple-900/80 border border-purple-800/80 text-xs text-purple-300 font-medium transition-colors shadow-sm"
-                  title="Abrir auditoria de segurança com IA para este comércio"
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-purple-950/70 hover:bg-purple-900/80 border border-purple-800/80 text-xs text-purple-300 font-medium transition-colors shadow-sm whitespace-nowrap shrink-0"
+                  title="Auditoria de segurança com IA"
                 >
                   <Sparkles className="w-3.5 h-3.5 text-purple-400" />
                   <span>Auditar com IA</span>
@@ -769,7 +878,7 @@ export default function App() {
 
                 <button
                   onClick={() => setIsCloudModalOpen(true)}
-                  className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 text-xs text-neutral-300 transition-colors"
+                  className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 text-xs text-neutral-300 transition-colors whitespace-nowrap shrink-0"
                 >
                   <Cloud className={`w-3.5 h-3.5 ${user ? 'text-emerald-400' : 'text-neutral-400'}`} />
                   <span className="text-[11px]">
@@ -778,53 +887,26 @@ export default function App() {
                 </button>
 
                 <div className="flex items-center gap-1 bg-neutral-900 p-1 rounded-xl border border-neutral-800">
-                  <button
-                    onClick={() => {
-                      setFocusedCameraId(null);
-                      setGridView('1x1');
-                    }}
-                    className={`px-2.5 py-1 rounded-lg text-xs font-mono transition-colors ${
-                      gridView === '1x1' && !focusedCameraId
-                        ? 'bg-neutral-800 text-white font-semibold'
-                        : 'text-neutral-400 hover:text-neutral-200'
-                    }`}
-                    title="Foco em 1 Câmera"
-                  >
-                    1x1
-                  </button>
-                  <button
-                    onClick={() => {
-                      setFocusedCameraId(null);
-                      setGridView('2x2');
-                    }}
-                    className={`px-2.5 py-1 rounded-lg text-xs font-mono transition-colors ${
-                      gridView === '2x2' && !focusedCameraId
-                        ? 'bg-neutral-800 text-white font-semibold'
-                        : 'text-neutral-400 hover:text-neutral-200'
-                    }`}
-                    title="Grade 2x2"
-                  >
-                    2x2
-                  </button>
-                  <button
-                    onClick={() => {
-                      setFocusedCameraId(null);
-                      setGridView('3x3');
-                    }}
-                    className={`px-2.5 py-1 rounded-lg text-xs font-mono transition-colors ${
-                      gridView === '3x3' && !focusedCameraId
-                        ? 'bg-neutral-800 text-white font-semibold'
-                        : 'text-neutral-400 hover:text-neutral-200'
-                    }`}
-                    title="Grade 3x3"
-                  >
-                    3x3
-                  </button>
+                  {(['1x1', '2x2', '3x3'] as GridViewMode[]).map((mode) => (
+                    <button
+                      key={mode}
+                      onClick={() => {
+                        setFocusedCameraId(null);
+                        setGridView(mode);
+                      }}
+                      className={`px-2.5 py-1 rounded-lg text-xs font-mono transition-colors ${
+                        gridView === mode && !focusedCameraId
+                          ? 'bg-neutral-800 text-white font-semibold'
+                          : 'text-neutral-400 hover:text-neutral-200'
+                      }`}
+                    >
+                      {mode}
+                    </button>
+                  ))}
                 </div>
               </div>
             </div>
 
-            {/* Real-Time Camera Network & Resource Diagnostics Panel */}
             {isDiagnosticsOpen && (
               <SystemDiagnosticsPanel
                 cameras={cameras}
@@ -834,42 +916,58 @@ export default function App() {
               />
             )}
 
-            {/* Empty Cameras Fallback */}
-            {cameras.length === 0 ? (
+            {/* Empty Units / Cameras Fallback */}
+            {businesses.length === 0 ? (
+              <div className="p-16 text-center rounded-2xl bg-neutral-900/60 border border-neutral-800 space-y-4">
+                <div className="w-14 h-14 rounded-2xl bg-blue-950/60 text-blue-400 border border-blue-800 flex items-center justify-center mx-auto">
+                  <Building2 className="w-7 h-7" />
+                </div>
+                <h3 className="text-base font-semibold text-neutral-100">
+                  Nenhuma unidade configurada
+                </h3>
+                <p className="text-xs text-neutral-400 max-w-md mx-auto">
+                  {currentUserRole === 'admin'
+                    ? 'Cadastre uma unidade de monitoramento para organizar câmeras e gravações.'
+                    : 'Solicite ao administrador para cadastrar uma unidade de monitoramento.'}
+                </p>
+                {currentUserRole === 'admin' && (
+                  <div className="pt-2 flex justify-center">
+                    <button
+                      onClick={() => setIsBusinessModalOpen(true)}
+                      className="flex items-center gap-2 px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-semibold transition-all shadow-lg shadow-blue-900/30 whitespace-nowrap shrink-0"
+                    >
+                      <Plus className="w-4 h-4" />
+                      <span>Criar Primeira Unidade</span>
+                    </button>
+                  </div>
+                )}
+              </div>
+            ) : cameras.length === 0 ? (
               <div className="p-16 text-center rounded-2xl bg-neutral-900/60 border border-neutral-800 space-y-4">
                 <div className="w-14 h-14 rounded-2xl bg-blue-950/60 text-blue-400 border border-blue-800 flex items-center justify-center mx-auto">
                   <Video className="w-7 h-7" />
                 </div>
                 <h3 className="text-base font-semibold text-neutral-100">
-                  Nenhuma câmera cadastrada para {activeBusiness?.name}
+                  Nenhuma câmera conectada em {activeBusiness?.name}
                 </h3>
                 <p className="text-xs text-neutral-400 max-w-md mx-auto">
                   {currentUserRole === 'admin'
-                    ? 'Localize e conecte automaticamente câmeras do seu comércio (Intelbras, Tapo, Hikvision, Dahua, Yoosee ou Webcams) conectadas à sua rede local com 1 clique.'
-                    : 'Nenhuma câmera ativa neste comércio. Solicite ao administrador do sistema para adicionar as câmeras.'}
+                    ? 'Busque câmeras RTSP/ONVIF reais na sua rede local ou conecte uma câmera USB/IP.'
+                    : 'Nenhuma câmera cadastrada nesta unidade. Solicite ao administrador do sistema para adicionar as câmeras.'}
                 </p>
-                <div className="pt-2 flex flex-wrap justify-center gap-3">
-                  {currentUserRole === 'admin' ? (
+                {currentUserRole === 'admin' && (
+                  <div className="pt-2 flex justify-center">
                     <button
                       onClick={() => setIsAddModalOpen(true)}
-                      className="flex items-center gap-2 px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-semibold transition-all shadow-lg shadow-blue-900/30 hover:scale-[1.02]"
+                      className="flex items-center gap-2 px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-semibold transition-all shadow-lg shadow-blue-900/30 whitespace-nowrap shrink-0"
                     >
                       <Wifi className="w-4 h-4 text-cyan-300" />
-                      <span>Buscar Câmeras na Minha Rede (1-Clique)</span>
+                      <span>Buscar Câmeras na Rede</span>
                     </button>
-                  ) : (
-                    <button
-                      onClick={() => setIsRoleModalOpen(true)}
-                      className="flex items-center gap-2 px-5 py-2.5 bg-neutral-800 hover:bg-neutral-700 text-neutral-200 rounded-xl text-xs font-semibold transition-all border border-neutral-700 shadow"
-                    >
-                      <KeyRound className="w-4 h-4 text-amber-400" />
-                      <span>Desbloquear Modo Administrador para Adicionar Câmeras</span>
-                    </button>
-                  )}
-                </div>
+                  </div>
+                )}
               </div>
             ) : (
-              /* Grid of Cameras */
               <div className={`grid gap-4 ${getGridClasses()}`}>
                 {(focusedCameraId
                   ? cameras.filter((c) => c.id === focusedCameraId)
@@ -895,6 +993,7 @@ export default function App() {
                         return copy;
                       });
                     }}
+                    latestAiTags={cameraLatestAiTags[camera.id] || null}
                     currentUserRole={currentUserRole}
                   />
                 ))}
@@ -908,6 +1007,7 @@ export default function App() {
           <RecordingsGallery
             recordings={recordings}
             cameras={cameras}
+            motionEvents={motionEvents}
             user={user}
             accessToken={accessToken}
             cloudDestination={cloudDestination}
@@ -922,13 +1022,15 @@ export default function App() {
         )}
       </main>
 
-      {/* Storage & Information Footer */}
+      {/* Footer */}
       <footer className="border-t border-neutral-800/80 bg-neutral-950 py-4 mt-auto">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-neutral-500">
           <div className="flex items-center gap-2">
-            <span className="font-semibold text-neutral-400">{activeBusiness?.name}</span>
+            <span className="font-semibold text-neutral-400">
+              {activeBusiness?.name || 'Sentinela NVR'}
+            </span>
             <span>·</span>
-            <span>Administração Inteligente com IA &amp; Armazenamento Isolado</span>
+            <span>Monitoramento e Auditoria com Armazenamento Isolado</span>
           </div>
 
           <div className="flex items-center gap-4">
@@ -950,7 +1052,7 @@ export default function App() {
               className="hover:text-neutral-300 transition-colors flex items-center gap-1"
             >
               <Building2 className="w-3.5 h-3.5" />
-              <span>Trocar Comércio</span>
+              <span>Unidades</span>
             </button>
           </div>
         </div>
@@ -1008,6 +1110,7 @@ export default function App() {
         onSelectBusiness={handleSelectBusiness}
         onAddBusiness={handleAddBusiness}
         onDeleteBusiness={handleDeleteBusiness}
+        currentUserRole={currentUserRole}
       />
 
       <AISecurityInspectorModal
@@ -1028,14 +1131,12 @@ export default function App() {
         isLoadingDailyReport={isDailyReportLoading}
       />
 
-      {/* User and Admin Role Profile Switcher & Notification Controls */}
       <UserRoleModal
         isOpen={isRoleModalOpen}
         onClose={() => setIsRoleModalOpen(false)}
-        currentRole={currentUserRole}
-        onChangeRole={handleRoleChange}
-        activeBusinessName={activeBusiness?.name}
-        onPurgeDemoCameras={handlePurgeDemoCameras}
+        currentUser={authUser}
+        onLogout={handleLogout}
+        activeUnitName={activeBusiness?.name}
       />
     </div>
   );

@@ -51,7 +51,7 @@ export function sendHighThreatBrowserNotification(payload: HighThreatNotificatio
 
   const { cameraName, threatScore, reason, location, businessName } = payload;
   const title = `🚨 ALERTA CRÍTICO IA: ${cameraName}`;
-  const bodyText = `Ameaça ALTA detectada (${threatScore}%)${location ? ` em ${location}` : ''}${businessName ? ` (${businessName})` : ''}.\nMotivo: ${reason || 'Intrusão ou risco imediato detectado no estabelecimento'}`;
+  const bodyText = `Ameaça ALTA detectada (${threatScore}%)${location ? ` em ${location}` : ''}${businessName ? ` (${businessName})` : ''}.\nMotivo: ${reason || 'Risco imediato ou intrusão detectada no ambiente monitorado'}`;
 
   // CCTV Shield SVG as inline Data URL icon
   const iconSvg = `data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 24 24" fill="%23dc2626" stroke="%23ffffff" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>`;

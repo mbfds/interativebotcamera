@@ -1,19 +1,25 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   X,
   ShieldCheck,
   User,
   KeyRound,
   CheckCircle2,
-  AlertTriangle,
-  Lock,
-  Unlock,
   Bell,
-  Eye,
-  Settings,
-  Building,
+  LogOut,
+  UserPlus,
+  Trash2,
+  Users,
+  Power,
 } from 'lucide-react';
-import { UserRole } from '../types/camera';
+import { AuthUser, UserRole } from '../types/camera';
+import {
+  listUsers,
+  createUserAccount,
+  updateUserAccount,
+  deleteUserAccount,
+  changeOwnPassword,
+} from '../services/auth';
 import {
   getBrowserNotificationPermission,
   requestBrowserNotificationPermission,
@@ -23,44 +29,159 @@ import {
 interface UserRoleModalProps {
   isOpen: boolean;
   onClose: () => void;
-  currentRole: UserRole;
-  onChangeRole: (role: UserRole) => void;
-  activeBusinessName?: string;
-  onPurgeDemoCameras?: () => void;
+  currentUser: AuthUser;
+  onLogout: () => void;
+  activeUnitName?: string;
 }
 
 export const UserRoleModal: React.FC<UserRoleModalProps> = ({
   isOpen,
   onClose,
-  currentRole,
-  onChangeRole,
-  activeBusinessName = 'Comércio Ativo',
-  onPurgeDemoCameras,
+  currentUser,
+  onLogout,
+  activeUnitName,
 }) => {
-  const [pinInput, setPinInput] = useState('');
-  const [pinError, setPinError] = useState('');
+  const isAdmin = currentUser.role === 'admin';
+  const [activeTab, setActiveTab] = useState<'account' | 'users'>('account');
+
+  // Password change state
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [pwdFeedback, setPwdFeedback] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
+  const [isUpdatingPwd, setIsUpdatingPwd] = useState(false);
+
+  // Admin user management state
+  const [usersList, setUsersList] = useState<AuthUser[]>([]);
+  const [isLoadingUsers, setIsLoadingUsers] = useState(false);
+  const [usersError, setUsersError] = useState<string | null>(null);
+  const [newUserForm, setNewUserForm] = useState({
+    name: '',
+    username: '',
+    email: '',
+    password: '',
+    role: 'operador' as UserRole,
+  });
+  const [isCreatingUser, setIsCreatingUser] = useState(false);
+  const [resetPwdUserId, setResetPwdUserId] = useState<string | null>(null);
+  const [resetPwdValue, setResetPwdValue] = useState('');
+
+  // Browser notification state
   const [notificationStatus, setNotificationStatus] = useState<string>(
     getBrowserNotificationPermission()
   );
   const [notificationTestSuccess, setNotificationTestSuccess] = useState(false);
 
+  const loadUsers = useCallback(async () => {
+    if (!isAdmin) return;
+    setIsLoadingUsers(true);
+    setUsersError(null);
+    try {
+      const list = await listUsers();
+      setUsersList(list);
+    } catch (err: unknown) {
+      setUsersError(err instanceof Error ? err.message : 'Erro ao carregar usuários.');
+    } finally {
+      setIsLoadingUsers(false);
+    }
+  }, [isAdmin]);
+
+  useEffect(() => {
+    if (isOpen && isAdmin && activeTab === 'users') {
+      loadUsers();
+    }
+  }, [isOpen, isAdmin, activeTab, loadUsers]);
+
+  useEffect(() => {
+    if (!isOpen) {
+      setPwdFeedback(null);
+      setUsersError(null);
+      setResetPwdUserId(null);
+      setResetPwdValue('');
+    }
+  }, [isOpen]);
+
   if (!isOpen) return null;
 
-  const handleSwitchToAdmin = () => {
-    // Standard default PIN for quick admin elevation
-    if (pinInput.trim() === '1234' || pinInput.trim() === '') {
-      onChangeRole('admin');
-      setPinError('');
-      setPinInput('');
-    } else {
-      setPinError('PIN de Administrador incorreto. (PIN padrão: 1234)');
+  const handleChangeOwnPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setPwdFeedback(null);
+    setIsUpdatingPwd(true);
+    try {
+      await changeOwnPassword(currentPassword, newPassword);
+      setCurrentPassword('');
+      setNewPassword('');
+      setPwdFeedback({ type: 'ok', text: 'Senha alterada com sucesso.' });
+    } catch (err: unknown) {
+      setPwdFeedback({
+        type: 'err',
+        text: err instanceof Error ? err.message : 'Erro ao atualizar senha.',
+      });
+    } finally {
+      setIsUpdatingPwd(false);
     }
   };
 
-  const handleSwitchToOperator = () => {
-    onChangeRole('operador');
-    setPinError('');
-    setPinInput('');
+  const handleCreateUser = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setUsersError(null);
+    setIsCreatingUser(true);
+    try {
+      await createUserAccount(newUserForm);
+      setNewUserForm({ name: '', username: '', email: '', password: '', role: 'operador' });
+      await loadUsers();
+    } catch (err: unknown) {
+      setUsersError(err instanceof Error ? err.message : 'Erro ao cadastrar usuário.');
+    } finally {
+      setIsCreatingUser(false);
+    }
+  };
+
+  const handleToggleRole = async (u: AuthUser) => {
+    setUsersError(null);
+    try {
+      const nextRole: UserRole = u.role === 'admin' ? 'operador' : 'admin';
+      await updateUserAccount(u.id, { role: nextRole });
+      await loadUsers();
+    } catch (err: unknown) {
+      setUsersError(err instanceof Error ? err.message : 'Erro ao alterar função.');
+    }
+  };
+
+  const handleToggleActive = async (u: AuthUser) => {
+    setUsersError(null);
+    try {
+      await updateUserAccount(u.id, { active: !u.active });
+      await loadUsers();
+    } catch (err: unknown) {
+      setUsersError(err instanceof Error ? err.message : 'Erro ao alterar status.');
+    }
+  };
+
+  const handleResetPassword = async (userId: string) => {
+    if (resetPwdValue.length < 6) {
+      setUsersError('A nova senha deve ter no mínimo 6 caracteres.');
+      return;
+    }
+    setUsersError(null);
+    try {
+      await updateUserAccount(userId, { password: resetPwdValue });
+      setResetPwdUserId(null);
+      setResetPwdValue('');
+      await loadUsers();
+    } catch (err: unknown) {
+      setUsersError(err instanceof Error ? err.message : 'Erro ao redefinir senha.');
+    }
+  };
+
+  const handleDeleteUser = async (u: AuthUser) => {
+    if (!confirm(`Remover permanentemente o usuário "${u.name}" (${u.username})?`)) return;
+    setUsersError(null);
+    try {
+      await deleteUserAccount(u.id);
+      await loadUsers();
+    } catch (err: unknown) {
+      setUsersError(err instanceof Error ? err.message : 'Erro ao excluir usuário.');
+    }
   };
 
   const handleRequestNotification = async () => {
@@ -68,10 +189,10 @@ export const UserRoleModal: React.FC<UserRoleModalProps> = ({
     setNotificationStatus(perm);
     if (perm === 'granted') {
       sendHighThreatBrowserNotification({
-        cameraName: 'Câmera Principal',
-        threatScore: 92,
-        reason: 'Teste de Notificação em Segundo Plano ativado com sucesso!',
-        location: activeBusinessName,
+        cameraName: 'Teste de Alerta',
+        threatScore: 95,
+        reason: 'Notificações em segundo plano ativadas.',
+        location: activeUnitName,
       });
       setNotificationTestSuccess(true);
       setTimeout(() => setNotificationTestSuccess(false), 4000);
@@ -80,29 +201,26 @@ export const UserRoleModal: React.FC<UserRoleModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in">
-      <div className="relative w-full max-w-xl bg-neutral-900 border border-neutral-800 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+      <div className="relative w-full max-w-2xl bg-neutral-900 border border-neutral-800 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
         {/* Header */}
         <div className="px-6 py-4 border-b border-neutral-800 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
             <div
               className={`p-2 rounded-xl border ${
-                currentRole === 'admin'
+                isAdmin
                   ? 'bg-amber-950/70 border-amber-800/80 text-amber-400'
                   : 'bg-blue-950/70 border-blue-800/80 text-blue-400'
               }`}
             >
-              {currentRole === 'admin' ? (
-                <ShieldCheck className="w-5 h-5" />
-              ) : (
-                <User className="w-5 h-5" />
-              )}
+              {isAdmin ? <ShieldCheck className="w-5 h-5" /> : <User className="w-5 h-5" />}
             </div>
             <div>
               <h2 className="text-base font-bold text-neutral-100">
-                Perfis de Acesso: Administrador vs Usuário
+                Conta &amp; Controle de Acesso
               </h2>
               <p className="text-xs text-neutral-400">
-                Separação completa de privilégios de controle e visualização segura
+                {currentUser.name} · @{currentUser.username} ·{' '}
+                {isAdmin ? 'Administrador' : 'Operador'}
               </p>
             </div>
           </div>
@@ -114,219 +232,359 @@ export const UserRoleModal: React.FC<UserRoleModalProps> = ({
           </button>
         </div>
 
+        {/* Navigation Tabs */}
+        <div className="px-6 pt-2 flex items-center gap-4 border-b border-neutral-800 bg-neutral-950/40 text-xs">
+          <button
+            type="button"
+            onClick={() => setActiveTab('account')}
+            className={`pb-2.5 px-2 font-medium border-b-2 transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5 ${
+              activeTab === 'account'
+                ? 'border-blue-500 text-blue-400 font-semibold'
+                : 'border-transparent text-neutral-400 hover:text-neutral-200'
+            }`}
+          >
+            <User className="w-3.5 h-3.5" />
+            <span>Minha Conta &amp; Alertas</span>
+          </button>
+
+          {isAdmin && (
+            <button
+              type="button"
+              onClick={() => setActiveTab('users')}
+              className={`pb-2.5 px-2 font-medium border-b-2 transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5 ${
+                activeTab === 'users'
+                  ? 'border-amber-500 text-amber-300 font-semibold'
+                  : 'border-transparent text-neutral-400 hover:text-neutral-200'
+              }`}
+            >
+              <Users className="w-3.5 h-3.5" />
+              <span>Gerenciar Usuários</span>
+            </button>
+          )}
+        </div>
+
         {/* Content Body */}
         <div className="p-6 overflow-y-auto space-y-5 text-xs text-neutral-300">
-          {/* Active Profile Status Badge */}
-          <div className="p-4 rounded-xl bg-neutral-950 border border-neutral-800 flex items-center justify-between">
-            <div>
-              <span className="text-[11px] text-neutral-400 block">Perfil Ativo na Sessão:</span>
-              <span className="text-sm font-bold text-neutral-100 flex items-center gap-1.5 mt-0.5">
-                {currentRole === 'admin' ? (
-                  <>
-                    <ShieldCheck className="w-4 h-4 text-amber-400" />
-                    <span>Administrador (Acesso Irrestrito)</span>
-                  </>
-                ) : (
-                  <>
-                    <User className="w-4 h-4 text-blue-400" />
-                    <span>Usuário Operador (Modo Monitoramento & Segurança)</span>
-                  </>
-                )}
-              </span>
-            </div>
-            <span
-              className={`font-mono text-[10px] uppercase font-bold px-2 py-1 rounded-md border ${
-                currentRole === 'admin'
-                  ? 'bg-amber-950 text-amber-300 border-amber-800'
-                  : 'bg-blue-950 text-blue-300 border-blue-800'
-              }`}
-            >
-              {currentRole.toUpperCase()}
-            </span>
-          </div>
-
-          {/* Role Comparison Cards */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-            {/* Admin Role Card */}
-            <div
-              className={`p-4 rounded-xl border transition-all ${
-                currentRole === 'admin'
-                  ? 'bg-amber-950/20 border-amber-800/80 ring-1 ring-amber-500/50'
-                  : 'bg-neutral-950/60 border-neutral-800 opacity-80'
-              }`}
-            >
-              <div className="flex items-center justify-between mb-2">
-                <span className="font-bold text-neutral-100 flex items-center gap-1.5 text-xs">
-                  <ShieldCheck className="w-4 h-4 text-amber-400" />
-                  Administrador
-                </span>
-                {currentRole === 'admin' && (
-                  <span className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-amber-900 text-amber-200">
-                    ATIVO
-                  </span>
-                )}
-              </div>
-              <ul className="space-y-1.5 text-[11px] text-neutral-400">
-                <li className="flex items-center gap-1.5 text-emerald-400">
-                  <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
-                  <span>Adicionar, editar e remover câmeras</span>
-                </li>
-                <li className="flex items-center gap-1.5 text-emerald-400">
-                  <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
-                  <span>Cadastrar e gerenciar lojas/clientes</span>
-                </li>
-                <li className="flex items-center gap-1.5 text-emerald-400">
-                  <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
-                  <span>Auditoria e relatórios com IA (Gemini)</span>
-                </li>
-                <li className="flex items-center gap-1.5 text-emerald-400">
-                  <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
-                  <span>Diagnóstico de Rede & Gargalos</span>
-                </li>
-                <li className="flex items-center gap-1.5 text-emerald-400">
-                  <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
-                  <span>Configuração de Nuvem e Google Drive</span>
-                </li>
-              </ul>
-
-              {currentRole !== 'admin' && (
-                <div className="mt-3 pt-3 border-t border-neutral-800 space-y-2">
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="password"
-                      placeholder="PIN (Padrão: 1234)"
-                      value={pinInput}
-                      onChange={(e) => setPinInput(e.target.value)}
-                      className="w-full bg-neutral-900 border border-neutral-700 rounded-lg px-2.5 py-1 text-xs text-neutral-200 focus:outline-none focus:border-amber-500"
-                    />
-                    <button
-                      onClick={handleSwitchToAdmin}
-                      className="px-3 py-1 bg-amber-600 hover:bg-amber-500 text-white font-semibold rounded-lg text-xs whitespace-nowrap transition-colors"
-                    >
-                      Acessar Admin
-                    </button>
+          {activeTab === 'account' && (
+            <>
+              {/* Active Account Summary */}
+              <div className="p-4 rounded-xl bg-neutral-950 border border-neutral-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <span className="text-[11px] text-neutral-400 block">Usuário Autenticado</span>
+                  <div className="text-sm font-bold text-neutral-100 flex items-center gap-2 mt-0.5">
+                    <span>{currentUser.name}</span>
+                    <span className="text-neutral-500">·</span>
+                    <span className="font-mono text-xs text-neutral-400">
+                      {currentUser.email || `@${currentUser.username}`}
+                    </span>
                   </div>
-                  {pinError && <p className="text-[10px] text-rose-400">{pinError}</p>}
+                  <p className="text-[11px] text-neutral-500 mt-1">
+                    {isAdmin
+                      ? 'Privilégio de Administrador: acesso completo a rede, câmeras, agendamentos e usuários.'
+                      : 'Privilégio de Operador: monitoramento ao vivo e reprodução de gravações com segurança operacional.'}
+                  </p>
                 </div>
-              )}
-            </div>
 
-            {/* Operator / User Role Card */}
-            <div
-              className={`p-4 rounded-xl border transition-all ${
-                currentRole === 'operador'
-                  ? 'bg-blue-950/20 border-blue-800/80 ring-1 ring-blue-500/50'
-                  : 'bg-neutral-950/60 border-neutral-800 opacity-80'
-              }`}
-            >
-              <div className="flex items-center justify-between mb-2">
-                <span className="font-bold text-neutral-100 flex items-center gap-1.5 text-xs">
-                  <User className="w-4 h-4 text-blue-400" />
-                  Usuário Operador
-                </span>
-                {currentRole === 'operador' && (
-                  <span className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-blue-900 text-blue-200">
-                    ATIVO
-                  </span>
-                )}
+                <button
+                  type="button"
+                  onClick={onLogout}
+                  className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-neutral-900 hover:bg-red-950/70 hover:text-red-300 border border-neutral-700 hover:border-red-800 text-neutral-300 font-medium transition-colors whitespace-nowrap shrink-0 self-start sm:self-center"
+                >
+                  <LogOut className="w-3.5 h-3.5" />
+                  <span>Sair da Conta</span>
+                </button>
               </div>
-              <ul className="space-y-1.5 text-[11px] text-neutral-400">
-                <li className="flex items-center gap-1.5 text-emerald-400">
-                  <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
-                  <span>Visualização ao vivo das câmeras</span>
-                </li>
-                <li className="flex items-center gap-1.5 text-emerald-400">
-                  <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
-                  <span>Reprodução de gravações e download</span>
-                </li>
-                <li className="flex items-center gap-1.5 text-emerald-400">
-                  <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
-                  <span>Receber alertas sonoros e sirenes</span>
-                </li>
-                <li className="flex items-center gap-1.5 text-neutral-500 line-through">
-                  <span>Adicionar ou apagar câmeras</span>
-                </li>
-                <li className="flex items-center gap-1.5 text-neutral-500 line-through">
-                  <span>Alterar credenciais de rede / RTSP</span>
-                </li>
-              </ul>
 
-              {currentRole !== 'operador' && (
-                <div className="mt-3 pt-3 border-t border-neutral-800">
-                  <button
-                    onClick={handleSwitchToOperator}
-                    className="w-full py-1.5 bg-neutral-800 hover:bg-neutral-700 text-neutral-200 font-semibold rounded-lg text-xs transition-colors"
+              {/* Change Password Form */}
+              <form
+                onSubmit={handleChangeOwnPassword}
+                className="p-4 rounded-xl bg-neutral-950 border border-neutral-800 space-y-3"
+              >
+                <div className="flex items-center gap-2 font-semibold text-neutral-200">
+                  <KeyRound className="w-4 h-4 text-blue-400" />
+                  <span>Alterar Minha Senha</span>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <input
+                    type="password"
+                    required
+                    value={currentPassword}
+                    onChange={(e) => setCurrentPassword(e.target.value)}
+                    placeholder="Senha atual"
+                    className="bg-neutral-900 border border-neutral-800 rounded-lg px-3 py-2 text-xs text-neutral-100 focus:outline-none focus:border-blue-500"
+                  />
+                  <input
+                    type="password"
+                    required
+                    minLength={6}
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    placeholder="Nova senha (mín. 6 caracteres)"
+                    className="bg-neutral-900 border border-neutral-800 rounded-lg px-3 py-2 text-xs text-neutral-100 focus:outline-none focus:border-blue-500"
+                  />
+                </div>
+
+                {pwdFeedback && (
+                  <p
+                    className={`text-[11px] ${
+                      pwdFeedback.type === 'ok' ? 'text-emerald-400' : 'text-red-400'
+                    }`}
                   >
-                    Mudar para Modo Operador
+                    {pwdFeedback.text}
+                  </p>
+                )}
+
+                <div className="flex justify-end">
+                  <button
+                    type="submit"
+                    disabled={isUpdatingPwd}
+                    className="px-3.5 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-medium text-xs transition-colors whitespace-nowrap shrink-0"
+                  >
+                    {isUpdatingPwd ? 'Atualizando...' : 'Atualizar Senha'}
                   </button>
                 </div>
-              )}
-            </div>
-          </div>
+              </form>
 
-          {/* Browser Notifications Permission Box */}
-          <div className="p-4 rounded-xl bg-neutral-950 border border-neutral-800 space-y-2">
-            <div className="flex items-center justify-between">
-              <span className="font-semibold text-neutral-200 flex items-center gap-2">
-                <Bell className="w-4 h-4 text-cyan-400" />
-                Notificações em Segundo Plano (Browser API)
-              </span>
-              <span
-                className={`font-mono text-[10px] uppercase font-bold px-2 py-0.5 rounded ${
-                  notificationStatus === 'granted'
-                    ? 'bg-emerald-950 text-emerald-300 border border-emerald-800'
-                    : notificationStatus === 'denied'
-                    ? 'bg-rose-950 text-rose-300 border border-rose-800'
-                    : 'bg-amber-950 text-amber-300 border border-amber-800'
-                }`}
-              >
-                {notificationStatus === 'granted'
-                  ? 'Ativado'
-                  : notificationStatus === 'denied'
-                  ? 'Bloqueado'
-                  : 'Pendente'}
-              </span>
-            </div>
-            <p className="text-[11px] text-neutral-400">
-              Receba avisos instantâneos na área de trabalho/celular quando a IA detectar uma Ameaça de nível <strong>ALTO</strong>, mesmo com a aba minimizada ou em segundo plano.
-            </p>
-            <div className="pt-1 flex flex-wrap gap-2">
-              <button
-                onClick={handleRequestNotification}
-                className="px-3 py-1.5 bg-cyan-600 hover:bg-cyan-500 text-white font-medium rounded-lg text-xs transition-colors shadow-sm"
-              >
-                {notificationStatus === 'granted'
-                  ? 'Testar Alerta em 2º Plano'
-                  : 'Ativar Notificações no Navegador'}
-              </button>
-              {notificationTestSuccess && (
-                <span className="text-[11px] text-emerald-400 flex items-center gap-1">
-                  <CheckCircle2 className="w-3.5 h-3.5" /> Notificação enviada ao sistema!
-                </span>
-              )}
-            </div>
-          </div>
-
-          {/* Demonstrative Cameras Purge Utility */}
-          {onPurgeDemoCameras && (
-            <div className="p-3.5 rounded-xl bg-neutral-950/80 border border-neutral-800 flex items-center justify-between gap-3">
-              <div>
-                <span className="font-medium text-neutral-200 block text-xs">
-                  Limpeza de Câmeras Demonstrativas
-                </span>
+              {/* Browser Notifications Permission Box */}
+              <div className="p-4 rounded-xl bg-neutral-950 border border-neutral-800 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="font-semibold text-neutral-200 flex items-center gap-2">
+                    <Bell className="w-4 h-4 text-cyan-400" />
+                    Notificações em Segundo Plano (Navegador)
+                  </span>
+                  <span
+                    className={`font-mono text-[10px] uppercase font-bold ${
+                      notificationStatus === 'granted'
+                        ? 'text-emerald-400'
+                        : notificationStatus === 'denied'
+                        ? 'text-rose-400'
+                        : 'text-amber-400'
+                    }`}
+                  >
+                    {notificationStatus === 'granted'
+                      ? 'Ativado'
+                      : notificationStatus === 'denied'
+                      ? 'Bloqueado'
+                      : 'Pendente'}
+                  </span>
+                </div>
                 <p className="text-[11px] text-neutral-400">
-                  Garante que nenhuma câmera demonstrativa ou fictícia apareça no seu painel.
+                  Receba avisos instantâneos quando a IA identificar uma ameaça de nível{' '}
+                  <strong>ALTO</strong>, mesmo com a aba em segundo plano.
                 </p>
+                <div className="pt-1 flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleRequestNotification}
+                    className="px-3 py-1.5 bg-cyan-600 hover:bg-cyan-500 text-white font-medium rounded-lg text-xs transition-colors whitespace-nowrap shrink-0"
+                  >
+                    {notificationStatus === 'granted'
+                      ? 'Testar Notificação'
+                      : 'Ativar Notificações no Navegador'}
+                  </button>
+                  {notificationTestSuccess && (
+                    <span className="text-[11px] text-emerald-400 flex items-center gap-1">
+                      <CheckCircle2 className="w-3.5 h-3.5" /> Notificação enviada!
+                    </span>
+                  )}
+                </div>
               </div>
-              <button
-                onClick={() => {
-                  onPurgeDemoCameras();
-                  onClose();
-                }}
-                className="px-3 py-1.5 rounded-lg bg-neutral-800 hover:bg-rose-950/80 hover:text-rose-300 hover:border-rose-800 border border-neutral-700 text-neutral-300 text-xs transition-colors shrink-0"
+            </>
+          )}
+
+          {activeTab === 'users' && isAdmin && (
+            <div className="space-y-4">
+              {/* Add User Form */}
+              <form
+                onSubmit={handleCreateUser}
+                className="p-4 rounded-xl bg-neutral-950 border border-neutral-800 space-y-3"
               >
-                Apagar Câmeras Fictícias
-              </button>
+                <div className="flex items-center gap-2 font-semibold text-neutral-200">
+                  <UserPlus className="w-4 h-4 text-blue-400" />
+                  <span>Cadastrar Novo Usuário</span>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <input
+                    type="text"
+                    required
+                    value={newUserForm.name}
+                    onChange={(e) => setNewUserForm((p) => ({ ...p, name: e.target.value }))}
+                    placeholder="Nome completo"
+                    className="bg-neutral-900 border border-neutral-800 rounded-lg px-3 py-2 text-xs text-neutral-100 focus:outline-none focus:border-blue-500"
+                  />
+                  <input
+                    type="text"
+                    required
+                    value={newUserForm.username}
+                    onChange={(e) => setNewUserForm((p) => ({ ...p, username: e.target.value }))}
+                    placeholder="Usuário de login"
+                    className="bg-neutral-900 border border-neutral-800 rounded-lg px-3 py-2 text-xs text-neutral-100 font-mono focus:outline-none focus:border-blue-500"
+                  />
+                  <input
+                    type="email"
+                    value={newUserForm.email}
+                    onChange={(e) => setNewUserForm((p) => ({ ...p, email: e.target.value }))}
+                    placeholder="E-mail (opcional)"
+                    className="bg-neutral-900 border border-neutral-800 rounded-lg px-3 py-2 text-xs text-neutral-100 focus:outline-none focus:border-blue-500"
+                  />
+                  <input
+                    type="password"
+                    required
+                    minLength={6}
+                    value={newUserForm.password}
+                    onChange={(e) => setNewUserForm((p) => ({ ...p, password: e.target.value }))}
+                    placeholder="Senha inicial (mín. 6)"
+                    className="bg-neutral-900 border border-neutral-800 rounded-lg px-3 py-2 text-xs text-neutral-100 focus:outline-none focus:border-blue-500"
+                  />
+                </div>
+
+                <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+                  <div className="flex items-center gap-2">
+                    <span className="text-neutral-400">Perfil:</span>
+                    <select
+                      value={newUserForm.role}
+                      onChange={(e) =>
+                        setNewUserForm((p) => ({ ...p, role: e.target.value as UserRole }))
+                      }
+                      className="bg-neutral-900 border border-neutral-800 rounded-lg px-2.5 py-1.5 text-xs text-neutral-100 focus:outline-none focus:border-blue-500"
+                    >
+                      <option value="operador">Operador (Visualização &amp; Gravações)</option>
+                      <option value="admin">Administrador (Acesso Total)</option>
+                    </select>
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={isCreatingUser}
+                    className="px-4 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-semibold text-xs transition-colors whitespace-nowrap shrink-0"
+                  >
+                    {isCreatingUser ? 'Salvando...' : 'Criar Usuário'}
+                  </button>
+                </div>
+              </form>
+
+              {usersError && (
+                <div className="p-3 rounded-xl bg-red-950/60 border border-red-800 text-red-200 text-xs">
+                  {usersError}
+                </div>
+              )}
+
+              {/* Registered Users List */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between text-neutral-400 font-medium">
+                  <span>Contas Cadastradas ({usersList.length})</span>
+                  {isLoadingUsers && <span className="text-[11px]">Carregando...</span>}
+                </div>
+
+                {usersList.map((u) => {
+                  const isSelf = u.id === currentUser.id;
+                  return (
+                    <div
+                      key={u.id}
+                      className="p-3.5 rounded-xl bg-neutral-950 border border-neutral-800 space-y-2.5"
+                    >
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="font-semibold text-neutral-100 text-sm truncate">
+                              {u.name}
+                            </span>
+                            <span className="text-neutral-500">·</span>
+                            <span className="font-mono text-[11px] text-neutral-400">
+                              @{u.username}
+                            </span>
+                            {isSelf && (
+                              <span className="text-[11px] text-blue-400 font-medium">· Você</span>
+                            )}
+                            {!u.active && (
+                              <span className="text-[11px] text-rose-400 font-medium">· Inativo</span>
+                            )}
+                          </div>
+                          <div className="text-[11px] text-neutral-500 flex items-center gap-2 mt-0.5">
+                            <span>{u.email || 'Sem e-mail cadastrado'}</span>
+                            <span>·</span>
+                            <span
+                              className={
+                                u.role === 'admin' ? 'text-amber-400 font-medium' : 'text-blue-400'
+                              }
+                            >
+                              {u.role === 'admin' ? 'Administrador' : 'Operador'}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-1.5 shrink-0 flex-wrap">
+                          <button
+                            type="button"
+                            onClick={() => handleToggleRole(u)}
+                            className="px-2.5 py-1 rounded-lg bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 text-[11px] text-neutral-300 transition-colors whitespace-nowrap shrink-0"
+                            title="Alternar entre Administrador e Operador"
+                          >
+                            {u.role === 'admin' ? 'Tornar Operador' : 'Tornar Admin'}
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setResetPwdUserId(resetPwdUserId === u.id ? null : u.id)
+                            }
+                            className="px-2.5 py-1 rounded-lg bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 text-[11px] text-neutral-300 transition-colors whitespace-nowrap shrink-0"
+                          >
+                            Redefinir Senha
+                          </button>
+
+                          {!isSelf && (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => handleToggleActive(u)}
+                                className={`p-1.5 rounded-lg border transition-colors ${
+                                  u.active
+                                    ? 'bg-neutral-900 border-neutral-800 text-emerald-400 hover:bg-neutral-800'
+                                    : 'bg-neutral-900 border-neutral-800 text-neutral-500 hover:text-emerald-400'
+                                }`}
+                                title={u.active ? 'Desativar usuário' : 'Reativar usuário'}
+                              >
+                                <Power className="w-3.5 h-3.5" />
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteUser(u)}
+                                className="p-1.5 rounded-lg bg-neutral-900 border border-neutral-800 text-neutral-500 hover:text-red-400 hover:bg-neutral-800 transition-colors"
+                                title="Excluir usuário"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      </div>
+
+                      {resetPwdUserId === u.id && (
+                        <div className="pt-2 border-t border-neutral-800 flex items-center gap-2">
+                          <input
+                            type="password"
+                            value={resetPwdValue}
+                            onChange={(e) => setResetPwdValue(e.target.value)}
+                            placeholder="Nova senha (mín. 6 caracteres)"
+                            className="flex-1 bg-neutral-900 border border-neutral-700 rounded-lg px-2.5 py-1.5 text-xs text-neutral-100 focus:outline-none focus:border-blue-500"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => handleResetPassword(u.id)}
+                            className="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium whitespace-nowrap shrink-0"
+                          >
+                            Salvar Senha
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           )}
         </div>
@@ -335,7 +593,7 @@ export const UserRoleModal: React.FC<UserRoleModalProps> = ({
         <div className="px-6 py-3 bg-neutral-950 border-t border-neutral-800 flex justify-end">
           <button
             onClick={onClose}
-            className="px-4 py-2 text-xs font-medium text-white bg-blue-600 hover:bg-blue-500 rounded-lg transition-colors"
+            className="px-4 py-2 text-xs font-medium text-white bg-blue-600 hover:bg-blue-500 rounded-lg transition-colors whitespace-nowrap shrink-0"
           >
             Fechar
           </button>

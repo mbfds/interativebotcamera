@@ -1,12 +1,9 @@
 import React from 'react';
 import {
   Shield,
-  Plus,
   Volume2,
   VolumeX,
-  Bell,
   Cloud,
-  HardDrive,
   Sparkles,
   Building2,
   ChevronDown,
@@ -14,7 +11,12 @@ import {
   ShieldCheck,
   User,
 } from 'lucide-react';
-import { GridViewMode, CloudStorageDestination, ClientBusiness, UserRole } from '../types/camera';
+import {
+  GridViewMode,
+  CloudStorageDestination,
+  ClientBusiness,
+  AuthUser,
+} from '../types/camera';
 
 interface NavbarProps {
   currentTab: 'monitor' | 'recordings';
@@ -31,7 +33,7 @@ interface NavbarProps {
   onOpenAIModal: () => void;
   onOpenDiagnostics?: () => void;
   onOpenRoleModal?: () => void;
-  currentRole?: UserRole;
+  currentUser: AuthUser;
   activeBusiness: ClientBusiness | null;
   cloudDestination: CloudStorageDestination;
   isGoogleConnected: boolean;
@@ -54,17 +56,17 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenAIModal,
   onOpenDiagnostics,
   onOpenRoleModal,
-  currentRole = 'admin',
+  currentUser,
   activeBusiness,
   cloudDestination,
   isGoogleConnected,
-  gridView,
-  onChangeGridView,
 }) => {
+  const isAdmin = currentUser.role === 'admin';
+
   return (
     <header className="sticky top-0 z-40 bg-neutral-950/90 backdrop-blur-md border-b border-neutral-800">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-8">
-        {/* Zone 1: Brand Wordmark (Single text element) */}
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-6">
+        {/* Zone 1: Brand Wordmark */}
         <div className="flex items-center gap-3 shrink-0">
           <div className="p-2 rounded-xl bg-blue-600/20 text-blue-400 border border-blue-500/30">
             <Shield className="w-5 h-5" />
@@ -78,7 +80,7 @@ export const Navbar: React.FC<NavbarProps> = ({
         </div>
 
         {/* Zone 2: Navigation Links */}
-        <nav className="hidden lg:flex items-center gap-6 text-sm font-medium text-neutral-400">
+        <nav className="hidden lg:flex items-center gap-5 text-sm font-medium text-neutral-400">
           <button
             onClick={() => onSelectTab('monitor')}
             className={`transition-colors whitespace-nowrap shrink-0 pb-0.5 ${
@@ -106,23 +108,21 @@ export const Navbar: React.FC<NavbarProps> = ({
             )}
           </button>
 
-          {/* Diagnostics Panel Shortcut */}
           {onOpenDiagnostics && (
             <button
               onClick={onOpenDiagnostics}
               className="hover:text-cyan-300 transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5 text-cyan-400"
-              title="Exibir métricas em tempo real de latência de rede (ms) e CPU/RAM de cada câmera"
+              title="Latência de rede (ms) e recursos de cada câmera"
             >
               <Wifi className="w-3.5 h-3.5" />
-              <span>Diagnóstico & Gargalos</span>
+              <span>Diagnóstico</span>
             </button>
           )}
 
-          {/* AI Auditor Link */}
           <button
             onClick={onOpenAIModal}
             className="hover:text-purple-300 transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5 text-purple-400"
-            title="Administração e Auditoria de Segurança com IA (Gemini 3.8 Flash)"
+            title="Auditoria de Segurança com IA"
           >
             <Sparkles className="w-3.5 h-3.5" />
             <span>Auditoria IA</span>
@@ -131,7 +131,7 @@ export const Navbar: React.FC<NavbarProps> = ({
           <button
             onClick={onOpenCloudModal}
             className="hover:text-neutral-200 transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5"
-            title="Escolha do cliente: Armazenamento Local ou Nuvem Google Drive"
+            title="Destino das gravações (Local ou Google Drive)"
           >
             <Cloud className={`w-3.5 h-3.5 ${isGoogleConnected ? 'text-emerald-400' : 'text-neutral-400'}`} />
             <span>Nuvem {cloudDestination === 'google_drive' ? '(Drive)' : '(Local)'}</span>
@@ -150,47 +150,47 @@ export const Navbar: React.FC<NavbarProps> = ({
           >
             <span>Alertas</span>
             {motionEventCount > 0 && (
-              <span className="w-2 h-2 rounded-full bg-amber-400" />
+              <span className="font-mono tabular-nums text-[11px] text-amber-400">
+                {motionEventCount}
+              </span>
             )}
           </button>
         </nav>
 
-        {/* Zone 3: Primary Action & Quick Tools */}
+        {/* Zone 3: User Account, Active Unit, Audio & Admin Actions */}
         <div className="flex items-center gap-2.5 shrink-0">
-          {/* User vs Admin Role Indicator & Switcher */}
           {onOpenRoleModal && (
             <button
               onClick={onOpenRoleModal}
-              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-semibold transition-all ${
-                currentRole === 'admin'
+              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-semibold transition-all whitespace-nowrap shrink-0 ${
+                isAdmin
                   ? 'bg-amber-950/70 hover:bg-amber-900/80 border-amber-800 text-amber-300'
                   : 'bg-blue-950/70 hover:bg-blue-900/80 border-blue-800 text-blue-300'
               }`}
-              title={`Perfil: ${currentRole === 'admin' ? 'Administrador (Acesso Total)' : 'Usuário Operador (Monitoramento)'}. Clique para alternar.`}
+              title={`Conta conectada: ${currentUser.name} (${isAdmin ? 'Administrador' : 'Operador'})`}
             >
-              {currentRole === 'admin' ? (
+              {isAdmin ? (
                 <ShieldCheck className="w-3.5 h-3.5 text-amber-400" />
               ) : (
                 <User className="w-3.5 h-3.5 text-blue-400" />
               )}
-              <span className="hidden sm:inline font-mono text-[11px]">
-                {currentRole === 'admin' ? 'Admin' : 'Operador'}
+              <span className="hidden sm:inline truncate max-w-[110px]">{currentUser.name}</span>
+              <span className="font-mono text-[10px] opacity-80">
+                ({isAdmin ? 'Admin' : 'Operador'})
               </span>
             </button>
           )}
 
-          {/* Active Business / Store Selector */}
           <button
             onClick={onOpenBusinessModal}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-neutral-900 hover:bg-neutral-800 text-xs text-neutral-200 border border-neutral-700/80 transition-colors max-w-[190px]"
-            title="Trocar comércio / cliente ativo"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-neutral-900 hover:bg-neutral-800 text-xs text-neutral-200 border border-neutral-700/80 transition-colors max-w-[180px]"
+            title="Trocar unidade monitorada"
           >
             <Building2 className="w-3.5 h-3.5 text-blue-400 shrink-0" />
-            <span className="truncate font-medium">{activeBusiness?.name || 'Meu Comércio'}</span>
+            <span className="truncate font-medium">{activeBusiness?.name || 'Unidade Principal'}</span>
             <ChevronDown className="w-3 h-3 text-neutral-400 shrink-0" />
           </button>
 
-          {/* Sound alarm mute toggle */}
           <button
             onClick={onToggleSound}
             className={`p-2 rounded-lg border transition-colors ${
@@ -203,16 +203,17 @@ export const Navbar: React.FC<NavbarProps> = ({
             {soundEnabled ? <Volume2 className="w-4 h-4 text-blue-400" /> : <VolumeX className="w-4 h-4" />}
           </button>
 
-          {/* Primary Action Button: Network Discovery & Add Camera */}
-          <button
-            onClick={onOpenAddModal}
-            className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 rounded-lg transition-all shadow-md shadow-blue-900/30 whitespace-nowrap shrink-0 hover:scale-[1.02]"
-            title="Escanear e descobrir câmeras na mesma rede ou adicionar manualmente"
-          >
-            <Wifi className="w-3.5 h-3.5 text-cyan-200" />
-            <span className="hidden sm:inline">Buscar Câmeras na Rede</span>
-            <span className="sm:hidden">Buscar Câmera</span>
-          </button>
+          {isAdmin && (
+            <button
+              onClick={onOpenAddModal}
+              className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 rounded-lg transition-all shadow-md shadow-blue-900/30 whitespace-nowrap shrink-0"
+              title="Buscar câmeras na rede local ou adicionar manualmente"
+            >
+              <Wifi className="w-3.5 h-3.5 text-cyan-200" />
+              <span className="hidden sm:inline">Buscar Câmeras</span>
+              <span className="sm:hidden">Adicionar</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -257,7 +258,7 @@ export const Navbar: React.FC<NavbarProps> = ({
           onClick={onOpenBusinessModal}
           className="px-2 py-1 rounded-md hover:text-white"
         >
-          Lojas
+          Unidades
         </button>
       </div>
     </header>

@@ -16,14 +16,32 @@ import {
   ExternalLink,
   Settings,
   Lock,
+  User as UserIcon,
+  Car,
+  PawPrint,
+  Package,
 } from 'lucide-react';
 import { User } from 'firebase/auth';
-import { RecordingItem, CameraConfig, CloudStorageDestination, UserRole } from '../types/camera';
+import {
+  RecordingItem,
+  CameraConfig,
+  CloudStorageDestination,
+  UserRole,
+  MotionEvent,
+  DetectedObjectTag,
+} from '../types/camera';
 import { VideoPlayerModal } from './VideoPlayerModal';
+import { RecordingTimeline, resolveRecordingMotionMarkers } from './RecordingTimeline';
+import {
+  DETECTED_OBJECT_CATALOG,
+  getRecordingDetectedObjects,
+  getObjectTagLabel,
+} from '../utils/detectedObjects';
 
 interface RecordingsGalleryProps {
   recordings: RecordingItem[];
   cameras: CameraConfig[];
+  motionEvents?: MotionEvent[];
   user: User | null;
   accessToken: string | null;
   cloudDestination: CloudStorageDestination;
@@ -39,6 +57,7 @@ interface RecordingsGalleryProps {
 export const RecordingsGallery: React.FC<RecordingsGalleryProps> = ({
   recordings,
   cameras,
+  motionEvents = [],
   user,
   accessToken,
   cloudDestination,
@@ -53,9 +72,12 @@ export const RecordingsGallery: React.FC<RecordingsGalleryProps> = ({
   const [selectedCameraFilter, setSelectedCameraFilter] = useState<string>('all');
   const [selectedTriggerFilter, setSelectedTriggerFilter] = useState<string>('all');
   const [selectedStorageFilter, setSelectedStorageFilter] = useState<string>('all');
+  const [selectedObjectFilter, setSelectedObjectFilter] = useState<'all' | DetectedObjectTag>('all');
   const [filterCriticalOnly, setFilterCriticalOnly] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [activeRecordingForPlayer, setActiveRecordingForPlayer] = useState<RecordingItem | null>(null);
+  const [playerInitialSeekTime, setPlayerInitialSeekTime] = useState<number>(0);
+  const [timelineSelectedId, setTimelineSelectedId] = useState<string | null>(null);
 
   // Helper to determine if a recording has an AI critical event detection
   const isRecordingCritical = (r: RecordingItem): boolean => {
@@ -91,9 +113,28 @@ export const RecordingsGallery: React.FC<RecordingsGalleryProps> = ({
     return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
   };
 
+  // Count recordings containing each AI detected object category
+  const objectCounts = useMemo(() => {
+    const counts: Record<DetectedObjectTag, number> = {
+      person: 0,
+      vehicle: 0,
+      pet: 0,
+      package: 0,
+    };
+    recordings.forEach((rec) => {
+      const tags = getRecordingDetectedObjects(rec);
+      tags.forEach((tag) => {
+        counts[tag] = (counts[tag] || 0) + 1;
+      });
+    });
+    return counts;
+  }, [recordings]);
+
   // Filtered recordings
   const filteredRecordings = useMemo(() => {
     return recordings.filter((r) => {
+      const detectedTags = getRecordingDetectedObjects(r);
+
       // Critical AI filter toggle
       if (filterCriticalOnly && !isRecordingCritical(r)) {
         return false;
@@ -117,12 +158,18 @@ export const RecordingsGallery: React.FC<RecordingsGalleryProps> = ({
       if (selectedStorageFilter === 'local' && !!r.driveFileId) {
         return false;
       }
+      if (selectedObjectFilter !== 'all' && !detectedTags.includes(selectedObjectFilter)) {
+        return false;
+      }
       if (searchQuery.trim()) {
         const query = searchQuery.toLowerCase();
         const matchName = r.cameraName.toLowerCase().includes(query);
         const matchLoc = r.cameraLocation.toLowerCase().includes(query);
         const matchReason = (r.aiThreatReason || r.aiAnalysisSummary || '').toLowerCase().includes(query);
-        return matchName || matchLoc || matchReason;
+        const matchObjects =
+          detectedTags.some((t) => t.includes(query) || getObjectTagLabel(t).toLowerCase().includes(query)) ||
+          (r.detectedElements || []).some((el) => el.toLowerCase().includes(query));
+        return matchName || matchLoc || matchReason || matchObjects;
       }
       return true;
     });
@@ -132,6 +179,7 @@ export const RecordingsGallery: React.FC<RecordingsGalleryProps> = ({
     selectedCameraFilter,
     selectedTriggerFilter,
     selectedStorageFilter,
+    selectedObjectFilter,
     searchQuery,
   ]);
 
@@ -337,6 +385,7 @@ export const RecordingsGallery: React.FC<RecordingsGalleryProps> = ({
           selectedCameraFilter !== 'all' ||
           selectedTriggerFilter !== 'all' ||
           selectedStorageFilter !== 'all' ||
+          selectedObjectFilter !== 'all' ||
           searchQuery.trim().length > 0) && (
           <button
             type="button"
@@ -345,14 +394,88 @@ export const RecordingsGallery: React.FC<RecordingsGalleryProps> = ({
               setSelectedCameraFilter('all');
               setSelectedTriggerFilter('all');
               setSelectedStorageFilter('all');
+              setSelectedObjectFilter('all');
               setSearchQuery('');
             }}
-            className="px-2.5 py-2 text-xs text-neutral-400 hover:text-neutral-200 bg-neutral-900 border border-neutral-800 rounded-xl hover:border-neutral-700 transition-colors"
+            className="px-2.5 py-2 text-xs text-neutral-400 hover:text-neutral-200 bg-neutral-900 border border-neutral-800 rounded-xl hover:border-neutral-700 transition-colors whitespace-nowrap shrink-0"
           >
             Limpar Filtros
           </button>
         )}
       </div>
+
+      {/* AI Detected Objects Segmented Filter Bar */}
+      <div className="flex flex-wrap items-center gap-2 text-xs">
+        <span className="text-[11px] text-neutral-400 flex items-center gap-1.5 mr-1">
+          <Filter className="w-3.5 h-3.5 text-neutral-500" />
+          <span>Objetos Detectados (IA):</span>
+        </span>
+
+        <div className="flex flex-wrap items-center gap-1 p-1 bg-neutral-900 border border-neutral-800 rounded-xl">
+          <button
+            type="button"
+            onClick={() => setSelectedObjectFilter('all')}
+            className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
+              selectedObjectFilter === 'all'
+                ? 'bg-neutral-800 text-neutral-100'
+                : 'text-neutral-400 hover:text-neutral-200'
+            }`}
+          >
+            Todos ({recordings.length})
+          </button>
+
+          {DETECTED_OBJECT_CATALOG.map((item) => {
+            const count = objectCounts[item.id] || 0;
+            const isActive = selectedObjectFilter === item.id;
+            const IconComp =
+              item.id === 'person'
+                ? UserIcon
+                : item.id === 'vehicle'
+                ? Car
+                : item.id === 'pet'
+                ? PawPrint
+                : Package;
+
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => setSelectedObjectFilter(isActive ? 'all' : item.id)}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
+                  isActive
+                    ? 'bg-blue-600 text-white'
+                    : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800/60'
+                }`}
+              >
+                <IconComp className="w-3.5 h-3.5 shrink-0" />
+                <span>{item.pluralLabel}</span>
+                <span
+                  className={`font-mono tabular-nums text-[11px] ${
+                    isActive ? 'text-blue-100' : 'text-neutral-500'
+                  }`}
+                >
+                  {count}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Visual Motion Timeline & Scrubbing Component */}
+      {filteredRecordings.length > 0 && (
+        <RecordingTimeline
+          recordings={filteredRecordings}
+          motionEvents={motionEvents}
+          selectedRecordingId={timelineSelectedId}
+          onSelectRecording={(rec) => setTimelineSelectedId(rec.id)}
+          onOpenPlayerAtTime={(rec, seekTime) => {
+            setTimelineSelectedId(rec.id);
+            setPlayerInitialSeekTime(seekTime);
+            setActiveRecordingForPlayer(rec);
+          }}
+        />
+      )}
 
       {/* Recordings Grid or Empty State */}
       {filteredRecordings.length === 0 ? (
@@ -376,22 +499,30 @@ export const RecordingsGallery: React.FC<RecordingsGalleryProps> = ({
               ? 'Você ainda não possui gravações salvas. Acesse o monitoramento e grave em qualquer câmera, ou ative a gravação automática por movimento.'
               : 'Nenhuma gravação corresponde aos filtros selecionados.'}
           </p>
-          {filterCriticalOnly ? (
-            <button
-              onClick={() => setFilterCriticalOnly(false)}
-              className="mt-2 inline-flex items-center gap-1.5 px-4 py-2 bg-neutral-800 hover:bg-neutral-700 text-neutral-200 rounded-xl text-xs font-medium transition-colors"
-            >
-              <span>Ver todas as gravações ({recordings.length})</span>
-            </button>
-          ) : recordings.length === 0 ? (
+          {recordings.length === 0 ? (
             <button
               onClick={onNavigateToMonitor}
-              className="mt-2 inline-flex items-center gap-1.5 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-medium transition-colors"
+              className="mt-2 inline-flex items-center gap-1.5 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-medium transition-colors whitespace-nowrap shrink-0"
             >
               <Video className="w-3.5 h-3.5" />
               <span>Ir para o Monitoramento Ao Vivo</span>
             </button>
-          ) : null}
+          ) : (
+            <button
+              type="button"
+              onClick={() => {
+                setFilterCriticalOnly(false);
+                setSelectedCameraFilter('all');
+                setSelectedTriggerFilter('all');
+                setSelectedStorageFilter('all');
+                setSelectedObjectFilter('all');
+                setSearchQuery('');
+              }}
+              className="mt-2 inline-flex items-center gap-1.5 px-4 py-2 bg-neutral-800 hover:bg-neutral-700 text-neutral-200 rounded-xl text-xs font-medium transition-colors whitespace-nowrap shrink-0"
+            >
+              <span>Limpar filtros e ver todas ({recordings.length})</span>
+            </button>
+          )}
         </div>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
@@ -405,14 +536,25 @@ export const RecordingsGallery: React.FC<RecordingsGalleryProps> = ({
 
             const isUploadingThis = isUploadingId === rec.id;
             const isCritical = isRecordingCritical(rec);
+            const recMarkers = resolveRecordingMotionMarkers(rec, motionEvents);
+            const detectedObjectTags = getRecordingDetectedObjects(rec);
+            const isTimelineFocused =
+              timelineSelectedId === rec.id ||
+              (!timelineSelectedId && filteredRecordings[0]?.id === rec.id);
 
             return (
               <div
                 key={rec.id}
-                onClick={() => setActiveRecordingForPlayer(rec)}
+                onClick={() => {
+                  setTimelineSelectedId(rec.id);
+                  setPlayerInitialSeekTime(0);
+                  setActiveRecordingForPlayer(rec);
+                }}
                 className={`group relative bg-neutral-900 rounded-xl overflow-hidden cursor-pointer transition-all hover:shadow-xl ${
                   isCritical
                     ? 'border-2 border-red-600/80 hover:border-red-500 shadow-lg shadow-red-950/40 ring-1 ring-red-600/30'
+                    : isTimelineFocused
+                    ? 'border border-blue-500/80 hover:border-blue-400'
                     : 'border border-neutral-800 hover:border-neutral-700'
                 }`}
               >
@@ -507,6 +649,16 @@ export const RecordingsGallery: React.FC<RecordingsGalleryProps> = ({
                     <span className="font-mono tabular-nums">{dateStr}</span>
                   </div>
 
+                  {/* Clean unboxed AI Detected Objects Metadata */}
+                  {detectedObjectTags.length > 0 && (
+                    <div className="mt-1.5 text-[11px] text-neutral-400 truncate">
+                      <span className="text-neutral-500">Objetos IA: </span>
+                      <span className="text-neutral-200 font-medium">
+                        {detectedObjectTags.map(getObjectTagLabel).join(' · ')}
+                      </span>
+                    </div>
+                  )}
+
                   {/* Critical AI Detection Highlight Box */}
                   {isCritical && (
                     <div className="mt-2.5 p-2 rounded-lg bg-red-950/70 border border-red-900/80 flex items-start gap-1.5 text-[11px] text-red-200">
@@ -570,15 +722,29 @@ export const RecordingsGallery: React.FC<RecordingsGalleryProps> = ({
                       )}
                     </div>
 
-                    {currentUserRole === 'admin' && (
+                    <div className="flex items-center gap-2">
                       <button
-                        onClick={(e) => handleDelete(rec.id, e)}
-                        className="p-1 text-neutral-500 hover:text-red-400 transition-colors"
-                        title="Excluir gravação (Administrador)"
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setTimelineSelectedId(rec.id);
+                        }}
+                        className="text-[11px] text-amber-400 hover:text-amber-300 font-mono tabular-nums transition-colors"
+                        title="Carregar na linha do tempo acima"
                       >
-                        <Trash2 className="w-3.5 h-3.5" />
+                        {recMarkers.length} {recMarkers.length === 1 ? 'evento' : 'eventos'}
                       </button>
-                    )}
+
+                      {currentUserRole === 'admin' && (
+                        <button
+                          onClick={(e) => handleDelete(rec.id, e)}
+                          className="p-1 text-neutral-500 hover:text-red-400 transition-colors"
+                          title="Excluir gravação (Administrador)"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
                   </div>
                 </div>
               </div>
@@ -594,6 +760,9 @@ export const RecordingsGallery: React.FC<RecordingsGalleryProps> = ({
         onDelete={onDeleteRecording}
         onUploadToDrive={onUploadToDrive}
         isUploadingToDrive={!!isUploadingId && isUploadingId === activeRecordingForPlayer?.id}
+        initialSeekTime={playerInitialSeekTime}
+        motionEvents={motionEvents}
+        currentUserRole={currentUserRole}
       />
     </div>
   );

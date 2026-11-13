@@ -16,7 +16,8 @@ import {
   ExternalLink,
   AlertTriangle,
 } from 'lucide-react';
-import { RecordingItem } from '../types/camera';
+import { RecordingItem, MotionEvent, UserRole } from '../types/camera';
+import { resolveRecordingMotionMarkers } from './RecordingTimeline';
 
 interface VideoPlayerModalProps {
   recording: RecordingItem | null;
@@ -24,6 +25,9 @@ interface VideoPlayerModalProps {
   onDelete: (id: string) => void;
   onUploadToDrive?: (recording: RecordingItem) => Promise<void>;
   isUploadingToDrive?: boolean;
+  initialSeekTime?: number;
+  motionEvents?: MotionEvent[];
+  currentUserRole?: UserRole;
 }
 
 export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
@@ -32,6 +36,9 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
   onDelete,
   onUploadToDrive,
   isUploadingToDrive,
+  initialSeekTime = 0,
+  motionEvents = [],
+  currentUserRole = 'admin',
 }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [objectUrl, setObjectUrl] = useState<string | null>(null);
@@ -50,15 +57,19 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
     const url = URL.createObjectURL(recording.blob);
     setObjectUrl(url);
     setIsPlaying(false);
-    setCurrentTime(0);
+    setCurrentTime(initialSeekTime || 0);
+    setDuration(recording.durationSeconds || 1);
     setHasVideoError(false);
 
     return () => {
       URL.revokeObjectURL(url);
     };
-  }, [recording]);
+  }, [recording, initialSeekTime]);
 
   if (!recording || !objectUrl) return null;
+
+  const motionMarkers = resolveRecordingMotionMarkers(recording, motionEvents);
+  const effectiveDuration = Math.max(1, duration || recording.durationSeconds || 1);
 
   const isCritical = Boolean(
     recording.isCritical ||
@@ -230,6 +241,9 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
               onLoadedMetadata={() => {
                 if (videoRef.current) {
                   setDuration(videoRef.current.duration || recording.durationSeconds);
+                  if (initialSeekTime > 0) {
+                    videoRef.current.currentTime = initialSeekTime;
+                  }
                 }
               }}
               onPlay={() => setIsPlaying(true)}
@@ -274,23 +288,73 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
 
         {/* Video Scrubber & Playback Controls */}
         <div className="p-4 bg-neutral-950 border-t border-neutral-800 space-y-3">
-          {/* Timeline Scrubber */}
-          <div className="flex items-center gap-3">
-            <span className="text-xs font-mono tabular-nums text-neutral-300 w-10 text-right">
-              {formatTime(currentTime)}
-            </span>
-            <input
-              type="range"
-              min="0"
-              max={duration || recording.durationSeconds || 1}
-              step="0.1"
-              value={currentTime}
-              onChange={handleSeek}
-              className="w-full accent-blue-500 h-1.5 bg-neutral-800 rounded-lg cursor-pointer"
-            />
-            <span className="text-xs font-mono tabular-nums text-neutral-400 w-10">
-              {formatTime(duration || recording.durationSeconds)}
-            </span>
+          {/* Timeline Scrubber with Highlighted Motion Markers */}
+          <div className="space-y-2">
+            <div className="flex items-center gap-3">
+              <span className="text-xs font-mono tabular-nums text-neutral-300 w-10 text-right">
+                {formatTime(currentTime)}
+              </span>
+              <div className="relative flex-1 flex items-center">
+                <input
+                  type="range"
+                  min="0"
+                  max={effectiveDuration}
+                  step="0.1"
+                  value={currentTime}
+                  onChange={handleSeek}
+                  className="w-full accent-blue-500 h-1.5 bg-neutral-800 rounded-lg cursor-pointer relative z-10"
+                />
+                {/* Highlighted Motion Markers along the scrubber track */}
+                {motionMarkers.map((mk) => {
+                  const pct = Math.min(98, Math.max(2, (mk.offsetSeconds / effectiveDuration) * 100));
+                  return (
+                    <button
+                      key={mk.id}
+                      type="button"
+                      onClick={() => {
+                        setCurrentTime(mk.offsetSeconds);
+                        if (videoRef.current && !hasVideoError) {
+                          videoRef.current.currentTime = mk.offsetSeconds;
+                        }
+                      }}
+                      style={{ left: `${pct}%` }}
+                      title={`${formatTime(mk.offsetSeconds)} · Movimento ${mk.intensity}%`}
+                      className={`absolute -top-2 -translate-x-1/2 w-2 h-2 rounded-full z-20 transition-transform hover:scale-150 ${
+                        mk.isCritical || mk.intensity >= 85 ? 'bg-red-500' : 'bg-amber-400'
+                      }`}
+                    />
+                  );
+                })}
+              </div>
+              <span className="text-xs font-mono tabular-nums text-neutral-400 w-10">
+                {formatTime(effectiveDuration)}
+              </span>
+            </div>
+
+            {motionMarkers.length > 0 && (
+              <div className="flex items-center gap-1.5 flex-wrap pl-12">
+                <span className="text-[10px] text-neutral-400">Eventos de movimento:</span>
+                {motionMarkers.map((mk) => (
+                  <button
+                    key={mk.id}
+                    type="button"
+                    onClick={() => {
+                      setCurrentTime(mk.offsetSeconds);
+                      if (videoRef.current && !hasVideoError) {
+                        videoRef.current.currentTime = mk.offsetSeconds;
+                      }
+                    }}
+                    className={`px-2 py-0.5 rounded text-[10px] font-mono tabular-nums border transition-colors ${
+                      Math.abs(currentTime - mk.offsetSeconds) <= 1.2
+                        ? 'bg-amber-950 border-amber-500 text-amber-200 font-semibold'
+                        : 'bg-neutral-900 hover:bg-neutral-800 border-neutral-800 text-neutral-300'
+                    }`}
+                  >
+                    {formatTime(mk.offsetSeconds)} ({mk.intensity}%)
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* Buttons row */}
@@ -380,25 +444,27 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
                 <span>Baixar</span>
               </button>
 
-              <button
-                onClick={() => {
-                  if (confirm('Tem certeza que deseja excluir esta gravação do site?')) {
-                    onDelete(recording.id);
-                    onClose();
-                  }
-                }}
-                className="p-2 rounded-lg bg-neutral-800 hover:bg-red-950 hover:text-red-400 text-neutral-400 transition-colors border border-neutral-700"
-                title="Excluir gravação"
-              >
-                <Trash2 className="w-4 h-4" />
-              </button>
+              {currentUserRole === 'admin' && (
+                <button
+                  onClick={() => {
+                    if (confirm('Tem certeza que deseja excluir esta gravação do site?')) {
+                      onDelete(recording.id);
+                      onClose();
+                    }
+                  }}
+                  className="p-2 rounded-lg bg-neutral-800 hover:bg-red-950 hover:text-red-400 text-neutral-400 transition-colors border border-neutral-700"
+                  title="Excluir gravação"
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              )}
             </div>
           </div>
         </div>
 
         {/* Video Metadata Footer */}
-        <div className="px-6 py-3 bg-neutral-900 border-t border-neutral-800 flex items-center justify-between text-xs text-neutral-400">
-          <div className="flex items-center gap-4">
+        <div className="px-6 py-3 bg-neutral-900 border-t border-neutral-800 flex flex-wrap items-center justify-between gap-2 text-xs text-neutral-400">
+          <div className="flex flex-wrap items-center gap-4">
             <span className="flex items-center gap-1.5 font-mono tabular-nums">
               <Clock className="w-3.5 h-3.5 text-neutral-500" />
               Duração: {formatTime(recording.durationSeconds)}
@@ -407,6 +473,22 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
               <HardDrive className="w-3.5 h-3.5 text-neutral-500" />
               Tamanho: {formatFileSize(recording.fileSizeBytes)}
             </span>
+            {(recording.detectedObjects?.length || recording.detectedElements?.length) ? (
+              <span className="text-neutral-300">
+                Objetos IA:{' '}
+                {(recording.detectedObjects || [])
+                  .map((t) =>
+                    t === 'person'
+                      ? 'Pessoa'
+                      : t === 'vehicle'
+                      ? 'Veículo'
+                      : t === 'pet'
+                      ? 'Pet'
+                      : 'Pacote'
+                  )
+                  .join(' · ') || recording.detectedElements?.slice(0, 2).join(' · ')}
+              </span>
+            ) : null}
           </div>
           <span className="text-[11px] text-neutral-500">
             {recording.driveFileId
